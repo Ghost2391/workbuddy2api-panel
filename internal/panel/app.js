@@ -2028,7 +2028,9 @@ function groupItems(d) {
     const rows = [];
     for (const t of (a.growth || [])) {
       GROWTH_TITLES[t.task_code] = t.title || t.task_code;
-      rows.push({ kind: 'growth', code: t.task_code, prog: t.target ? t.current + '/' + t.target : '—', status: 'scan' });
+      const auto = t.auto !== false;
+      rows.push({ kind: 'growth', code: t.task_code, prog: t.target ? t.current + '/' + t.target : '—', status: 'scan', auto,
+        message: auto ? '' : '需在官方客户端完成（面板无自动动作）' });
     }
     if (rows.length) groups.push({ uid: a.uid, nick: a.nickname, rows });
   }
@@ -2038,8 +2040,9 @@ const ST_WORDS = { done: '完成', running: '执行中', error: '失败', skippe
 function qrowHTML(it) {
   const isSchool = it.kind === 'school';
   const title = isSchool ? '开学季闭环' : (GROWTH_TITLES[it.code] || it.code);
-  const dotCls = it.status === 'scan' ? 'wait' : it.status === 'running' ? 'run' : it.status === 'error' ? 'err' : it.status === 'skipped' ? 'skip' : it.status === 'done' ? 'done' : 'wait';
-  const stWord = it.status === 'scan' ? '待执行' : (ST_WORDS[it.status] || it.status);
+  const manual = it.status === 'scan' && it.auto === false;
+  const dotCls = manual ? 'skip' : it.status === 'scan' ? 'wait' : it.status === 'running' ? 'run' : it.status === 'error' ? 'err' : it.status === 'skipped' ? 'skip' : it.status === 'done' ? 'done' : 'wait';
+  const stWord = manual ? '需官方客户端' : it.status === 'scan' ? '待执行' : (ST_WORDS[it.status] || it.status);
   return '<div class="qrow" title="' + esc(it.message || '') + '">' +
     '<span class="code">' + esc(it.code) + '</span>' +
     '<span class="name"><span class="t">' + esc(title) + '</span>' + (isSchool ? '<span class="tag mute">开学季</span>' : '') + '</span>' +

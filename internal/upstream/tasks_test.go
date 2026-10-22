@@ -83,3 +83,31 @@ func TestClaimRewardNotCompleted(t *testing.T) {
 		t.Fatal("want error for not-completed task")
 	}
 }
+
+// TestParseGrowthTasksGlobalCodeField 国际版任务码字段名是 code（CN 是 task_code）。
+// 只读 task_code 会让 global 任务全部变成空码——面板扫描看不到、自动动作匹配不上。
+// 本用例同时钉住 CN 形态不受影响（task_code 优先）。
+func TestParseGrowthTasksGlobalCodeField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"code":0,"msg":"OK","data":{"tasks":[
+			{"task_id":1,"code":"first_chat","title":"完成一次对话","status":"available"},
+			{"task_code":"chat_5","title":"累计5次对话","status":"available"}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}
+	tasks, err := c.ListTasks(&auth.Auth{AccessToken: "at", UID: "u1"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks=%d want 2", len(tasks))
+	}
+	if tasks[0].TaskCode != "first_chat" {
+		t.Errorf("global code=%q want first_chat（code 字段必须回落）", tasks[0].TaskCode)
+	}
+	if tasks[1].TaskCode != "chat_5" {
+		t.Errorf("cn task_code=%q want chat_5（task_code 优先）", tasks[1].TaskCode)
+	}
+}

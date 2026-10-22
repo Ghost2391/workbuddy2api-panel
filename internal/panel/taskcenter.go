@@ -28,10 +28,19 @@ import (
 
 // scanAccountItem 单账号扫描结果。
 type scanAccountItem struct {
-	UID       string          `json:"uid"`
-	Nickname  string          `json:"nickname"`
-	Growth    []upstream.Task `json:"growth,omitempty"`
-	GrowthErr string          `json:"growth_error,omitempty"`
+	UID       string     `json:"uid"`
+	Nickname  string     `json:"nickname"`
+	Growth    []scanTask `json:"growth,omitempty"`
+	GrowthErr string     `json:"growth_error,omitempty"`
+}
+
+// scanTask 扫描结果里的单个任务：upstream.Task 内联 + Auto 标记是否有面板自动动作。
+// Auto=false 表示该任务只能靠官方客户端真实使用行为完成（如国际版五任务：
+// first_chat / skill_installed / wechat_linked / expert_summoned / template_used），
+// 面板只展示、不入队执行。
+type scanTask struct {
+	upstream.Task
+	Auto bool `json:"auto"`
 }
 
 // growthPending 任务是否"未完成且可自动化"。
@@ -73,36 +82,38 @@ func (p *Panel) tasksScanAll(w http.ResponseWriter, r *http.Request) {
 			}
 			it := &items[i]
 			it.UID, it.Nickname = uid, a.Nickname
-			// D4 门控：global 账号无 CN 成长任务体系，不发起任何上游调用。
-			if a.IsGlobal() {
-				return
-			}
-			// 企业版门控：同上——企业版无个人成长体系（GET /v2/activity/growth/tasks
-			// 上游 403「growth system is only available for personal users」）。
+			// global（国际版）有独立的成长任务体系（/v2/activity/growth/tasks 实测 200，
+			// 下发 first_chat / skill_installed / wechat_linked / expert_summoned /
+			// template_used 五条），与 CN 任务码完全不同。此前按「D4 门控：global 无
+			// 成长任务体系」整域跳过，导致面板永远看不到国际版任务——扫描是只读接口，
+			// 放开即可；自动完成仍受 autoActions 匹配约束（国际版码暂无动作，不会入队）。
 			if a.IsEnterprise() {
 				return
+			}
+			// 扫描口径：未领取、未锁定即列出（不再要求「有自动动作」）——国际版任务
+			// 没有自动动作，但用户需要看到它们存在；Auto 字段区分能否一键执行。
+			// 队列构建仍走 growthPending（要求 autoAction），不受本口径影响。
+			seen := map[string]bool{}
+			addTask := func(t upstream.Task) {
+				if t.Claimed || t.Locked || t.TaskCode == "" || seen[t.TaskCode] {
+					return
+				}
+				seen[t.TaskCode] = true
+				it.Growth = append(it.Growth, scanTask{Task: t, Auto: autoActionFor(t.TaskCode) != nil})
 			}
 			if tasks, err := p.cfg.Upstream.ListTasks(a); err != nil {
 				it.GrowthErr = err.Error()
 			} else {
 				for _, t := range tasks {
-					if growthPending(t) {
-						it.Growth = append(it.Growth, t)
-					}
+					addTask(t)
 				}
 			}
 			// 小程序口径任务（school_season 校园日 / Sequential_Tasks_1 小程序首对话）
 			// 仅在 mp 头列表下发，与默认口径不重叠——合并进待办列表；mp 列表失败
 			// 静默（无 mp 任务的部署/活动结束时零影响）。
 			if mpTasks, err := p.cfg.Upstream.ListTasksMP(a); err == nil {
-				seen := map[string]bool{}
-				for _, t := range it.Growth {
-					seen[t.TaskCode] = true
-				}
 				for _, t := range mpTasks {
-					if growthPending(t) && !seen[t.TaskCode] {
-						it.Growth = append(it.Growth, t)
-					}
+					addTask(t)
 				}
 			}
 		}(i, st.UID)
@@ -218,7 +229,11 @@ func (p *Panel) startGrowthQueue(concurrency int, growth bool) (started bool, to
 		go func(a *auth.Auth) {
 			defer wg.Done()
 			one := queueAccount{a: a}
-			// D4 门控：global 账号无 CN 成长任务体系，不发起任何上游调用。
+			// global（国际版）任务码与 CN 完全不同（first_chat / skill_installed /
+			// wechat_linked / expert_summoned / template_used），目前没有对应自动动作，
+			// 且 accept 实测逐条返回 "task not found"（这些任务是服务端按真实使用行为
+			// 计数的，没有报名步骤）。入队只会白跑 accept 并刷误导日志，故队列仍跳过；
+			// 只读扫描已放开，面板能看到任务清单与状态。
 			if a.IsGlobal() {
 				return
 			}

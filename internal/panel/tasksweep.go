@@ -53,7 +53,10 @@ func (p *Panel) RunTaskSweepOnce() TaskSweepStats {
 		}
 		a := p.cfg.Pool.AuthByUID(ps.UID)
 		if a == nil || a.IsGlobal() || a.IsEnterprise() {
-			continue // 无个人成长体系：零上游请求
+			// global 有独立成长任务（任务码与 CN 不同、无 accept 步骤、按真实使用
+			// 行为计数），目前没有可自动化的动作——补领清扫跳过，零上游请求。
+			// 企业版无个人成长体系（任务端点上游 403）。
+			continue
 		}
 		wg.Add(1)
 		go func(a *auth.Auth, uid string) {

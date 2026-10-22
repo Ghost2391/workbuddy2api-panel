@@ -45,3 +45,6 @@ docs/
 *.zip
 server.exe
 .DS_Store
+
+# CodeGraph 本地索引
+.codegraph/

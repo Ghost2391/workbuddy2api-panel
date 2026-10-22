@@ -58,7 +58,8 @@ type Task struct {
 
 // ListTasks 拉取全量任务列表（默认口径，无端标记头）。
 // 响应形如 data.tasks[]，元素字段随任务类型变化（progress 可能是 {current,target} 或平铺），
-// 这里做宽松解析：两种形状都尝试。
+// 这里做宽松解析：两种形状都尝试。任务码字段两域不同名：CN 用 task_code，
+// global（国际版）用 code——parseGrowthTasks 已做回落。
 func (c *Client) ListTasks(a *auth.Auth) ([]Task, error) {
 	data, err := c.growthJSON(a, http.MethodGet, tasksListPath, nil)
 	if err != nil {
@@ -148,6 +149,7 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 	var resp struct {
 		Tasks []struct {
 			TaskCode     string          `json:"task_code"`
+			Code         string          `json:"code"` // global（国际版）下发字段名
 			Title        string          `json:"title"`
 			Description  string          `json:"description"`
 			TaskDesc     string          `json:"task_desc"`
@@ -183,8 +185,14 @@ func parseGrowthTasks(data json.RawMessage) ([]Task, error) {
 			}
 		}
 		claimed := t.AcceptStatus == "claimed"
+		code := t.TaskCode
+		if code == "" {
+			// global（国际版）任务用 code 字段（CN 用 task_code）：两域字段名不同，
+			// 不回落会让国际版任务全部变成空 code——扫描列表看不到、自动动作也匹配不上。
+			code = t.Code
+		}
 		out = append(out, Task{
-			TaskCode:     t.TaskCode,
+			TaskCode:     code,
 			Title:        t.Title,
 			Description:  t.Description,
 			TaskDesc:     t.TaskDesc,
