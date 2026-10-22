@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
@@ -49,8 +48,8 @@ func TestClaimRewardWebEndpoint(t *testing.T) {
 	if gotPlatform != "web" {
 		t.Errorf("x-client-platform=%q want web", gotPlatform)
 	}
-	if !strings.Contains(gotReferer, "workbuddy.cn") {
-		t.Errorf("Referer=%q 应指向 workbuddy.cn", gotReferer)
+	if want := srv.URL + "/profile/growth-center"; gotReferer != want {
+		t.Errorf("Referer=%q want %q（应与 base 同域）", gotReferer, want)
 	}
 }
 
@@ -81,6 +80,41 @@ func TestClaimRewardNotCompleted(t *testing.T) {
 	c := &Client{HTTP: srv.Client(), WebBaseCN: srv.URL}
 	if _, _, err := c.ClaimReward(&auth.Auth{AccessToken: "at", UID: "u1"}, "chat_5"); err == nil {
 		t.Fatal("want error for not-completed task")
+	}
+}
+
+// TestClaimRewardGlobalRealm 国际版领奖：base 切 workbuddy.ai，Origin/Referer 同域
+// （此前写死 workbuddy.cn，国际版请求会带与 base 不一致的来源域）。
+func TestClaimRewardGlobalRealm(t *testing.T) {
+	var gotPath, gotOrigin, gotReferer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotOrigin = r.Header.Get("Origin")
+		gotReferer = r.Header.Get("Referer")
+		w.Write([]byte(`{"code":0,"msg":"OK","data":{"already_claimed":false,"credit":50,"energy":0}}`))
+	}))
+	defer srv.Close()
+
+	a := &auth.Auth{AccessToken: "at", UID: "u1"}
+	if _, err := auth.BackfillRealmFor(a, "global"); err != nil {
+		t.Fatalf("BackfillRealmFor: %v", err)
+	}
+	c := &Client{HTTP: srv.Client(), GlobalEnabled: true, WebBaseGlobal: srv.URL}
+	credit, _, err := c.ClaimReward(a, "first_chat")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if credit != 50 {
+		t.Errorf("credit=%d want 50", credit)
+	}
+	if want := "/activity/growth/tasks/first_chat/claim"; gotPath != want {
+		t.Errorf("path=%q want %q", gotPath, want)
+	}
+	if gotOrigin != srv.URL {
+		t.Errorf("Origin=%q want %q（应与 base 同域）", gotOrigin, srv.URL)
+	}
+	if want := srv.URL + "/profile/growth-center"; gotReferer != want {
+		t.Errorf("Referer=%q want %q", gotReferer, want)
 	}
 }
 

@@ -238,13 +238,16 @@ func (c *Client) ClaimReward(a *auth.Auth, taskCode string) (credit, energy int6
 	if err != nil {
 		return 0, 0, err
 	}
-	// Web 端请求头形状（对照浏览器实际请求）：Origin/Referer 指向 workbuddy.cn 成长中心，
-	// 带 x-client-platform: web 标记来源端。
+	// Web 端请求头形状（对照浏览器实际请求）：Origin/Referer 指向该域的成长中心
+	// （CN workbuddy.cn / global workbuddy.ai），带 x-client-platform: web 标记来源端。
+	// 领奖端点是 /activity/growth/tasks/{code}/claim，两域同路径；写死 CN 域会让
+	// 国际版领奖请求带上与 base 不一致的 Origin，上游风控口径下应避免。
+	origin := c.webBase(a)
 	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", "https://www.workbuddy.cn")
-	req.Header.Set("Referer", "https://www.workbuddy.cn/profile/growth-center")
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Referer", origin+"/profile/growth-center")
 	req.Header.Set("x-client-platform", "web")
 	if ua := c.userAgent(a); ua != "" {
 		req.Header.Set("User-Agent", ua)

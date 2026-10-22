@@ -773,6 +773,8 @@ type Client struct {
 	// 空 = 缺省默认 https://www.workbuddy.ai（D5）。
 	ChatBaseGlobal    string
 	BillingBaseGlobal string
+	// WebBaseGlobal 国际版官网域（任务领奖类接口）。空 = 缺省 https://www.workbuddy.ai。
+	WebBaseGlobal string
 
 	// GlobalEnabled 是否启用 global realm 路由（config global.enabled，缺省 true）。
 	// false 时即便用户 auth 写了 realm=global 也**不**路由到 global base——
@@ -963,6 +965,9 @@ func (c *Client) billingBase(a *auth.Auth) string {
 // realm 感知：global 账号切国际站 workbuddy.ai，CN 用 workbuddy.cn。
 func (c *Client) webBase(a *auth.Auth) string {
 	if c.globalOn(a) {
+		if c.WebBaseGlobal != "" {
+			return c.WebBaseGlobal
+		}
 		return defaultGlobalBase
 	}
 	if c.WebBaseCN != "" {
