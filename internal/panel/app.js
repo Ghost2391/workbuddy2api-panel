@@ -10,7 +10,7 @@ let overviewData = null, cfgLoaded = null;
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
-let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+let mdFilter = mdLoadFilter();
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
 let mdLocks = [], mdRecent = [];
 let reqFilter = { q: '', outcome: '' };
@@ -634,11 +634,22 @@ function rateCell(m) {
     return '<span' + tip + ' style="cursor:help">' + (m.credits ? esc(m.credits) : '—') +
       ' <span class="tag warn">' + esc(m.promo_label) + '</span></span>';
   }
+  if (m.credits) {
+    return '<span' + tip + ' style="cursor:help">' + esc(m.credits) + mdPaidTag(m) + '</span>';
+  }
   return m.credits ? esc(m.credits) : '—';
 }
 
 async function loadModels() {
   const tb = $('mdBody');
+  // 把持久化的筛选态同步回控件（首次加载/刷新后下拉框要与 mdFilter 一致）。
+  $('mdQ').value = mdFilter.q || '';
+  $('mdRealm').value = mdFilter.realm || '';
+  $('mdCap').value = mdFilter.cap || '';
+  $('mdEffort').value = mdFilter.effort || '';
+  $('mdPromo').value = mdFilter.promo || '';
+  if ($('mdPaid')) $('mdPaid').value = mdFilter.paid || '';
+  $('mdSort').value = mdFilter.sort || 'default';
   tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
   try {
     // 探测、模型锁与最近请求都是本地可选增强：任一失败不影响模型目录本身。
@@ -714,6 +725,10 @@ function mdMatch(m, f) {
   if (f.promo === 'promo' && factor == null && !m.promo_label) return false;
   if (f.promo === 'free' && !(factor === 0)) return false;
   if (f.promo === 'discount' && !(factor != null && factor > 0)) return false;
+  if (f.paid === 'tier' && !m.tier_label) return false;
+  if (f.paid === 'paid' && mdPaidOf(m) !== 'paid') return false;
+  if (f.paid === 'free' && mdPaidOf(m) !== 'free') return false;
+  if (f.paid === 'unknown' && mdPaidOf(m) !== 'unknown') return false;
   return true;
 }
 
@@ -723,6 +738,12 @@ function mdSortList(list, f) {
   const out = list.slice();
   const num = v => { const n = Number(v || 0); return Number.isFinite(n) ? n : 0; };
   if (f.sort === 'rate') out.sort((a, b) => mdRateValue(a) - mdRateValue(b));
+  // 降序同样把「无价格」压到末尾：Infinity 直接反序会让缺价模型冒充最贵。
+  // 做法是把缺价映射成 -1（比任何真实倍率都小），再走同一套减法比较。
+  else if (f.sort === 'rate-desc') {
+    const d = m => { const v = mdRateValue(m); return v === Infinity ? -1 : v; };
+    out.sort((a, b) => d(b) - d(a));
+  }
   else if (f.sort === 'context') out.sort((a, b) => num(b.context_length) - num(a.context_length));
   else if (f.sort === 'output') out.sort((a, b) => num(b.max_output_tokens) - num(a.max_output_tokens));
   else if (f.sort === 'name') out.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
@@ -790,6 +811,37 @@ function mdAvailabilityTag(m) {
   return ' <span class="tag ' + av.cls + ' md-avail" title="' + esc(av.tip) + '">' + esc(av.label) + '</span>';
 }
 
+// mdPaidOf 模型的价格性质（用于「付费/免费」筛选与标签）。
+// 只按积分倍率分档：账号类型（tier）是正交的另一维度，有自己的筛选项与标签——
+// 两者混在一起会让「付费」筛选漏掉 Pro 模型（它同时也是 x1.33 付费模型）。
+function mdPaidOf(m) {
+  return mdPriceOf(m);
+}
+
+// mdPriceOf 仅按倍率分档（不含账号类型）：free / paid / unknown。
+function mdPriceOf(m) {
+  const raw = (m && m.promo_credits != null && m.promo_credits !== '') ? m.promo_credits : m.credits;
+  if (raw == null || String(raw).trim() === '') return 'unknown';
+  const n = parseFloat(String(raw).replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(n)) return 'unknown';
+  return n > 0 ? 'paid' : 'free';
+}
+
+// mdTierTag 账号类型标签：命中 modelTiers 才显示（权威字段，不靠 11158 反推）。
+function mdTierTag(m) {
+  if (!m || !m.tier_label) return '';
+  const note = m.tier_note || ('该模型仅面向 ' + (m.tier_required_user_type || 'Pro') + ' 及以上账号开放');
+  return ' <span class="tag bad" title="' + esc(note) + '">' + esc(m.tier_label) + '</span>';
+}
+
+// mdPaidTag 价格标签：付费/免费/无价格（倍率维度，与账号类型正交）。
+function mdPaidTag(m) {
+  const k = mdPriceOf(m);
+  if (k === 'paid') return ' <span class="tag mute" title="按当前生效积分倍率计费">付费</span>';
+  if (k === 'free') return ' <span class="tag ok" title="当前生效倍率为 0（限时免费或牌价免费）">免费</span>';
+  return '';
+}
+
 // mdRowHtml 单个模型行（纯渲染，便于独立测试）。
 function mdRowHtml(m, pr) {
   const eff = (m.supported_efforts || []).slice();
@@ -804,7 +856,7 @@ function mdRowHtml(m, pr) {
   if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
-  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
+  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid" data-copy="' + esc(m.id) + '" title="点击复制模型 ID">' + esc(m.id) + '</span>' + mdTierTag(m) + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
     '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
@@ -827,10 +879,37 @@ function renderModels() {
   $('mdCount').className = filtered ? 'note src-off' : 'note';
 }
 
+// 筛选条件持久化（localStorage）：模型表一次拉全很贵（直连上游），筛选态跨刷新
+// 保留能省掉反复重设；损坏/不可用时静默回落默认值，不阻塞首屏。
+const MD_FILTER_KEY = 'wb2api:mdFilter';
+function mdLoadFilter() {
+  const def = { q: '', realm: '', cap: '', effort: '', promo: '', paid: '', sort: 'default' };
+  try {
+    const raw = localStorage.getItem(MD_FILTER_KEY);
+    if (!raw) return def;
+    const saved = JSON.parse(raw);
+    const f = typeof saved === 'object' && saved ? saved : {};
+    return {
+      q: typeof f.q === 'string' ? f.q : def.q,
+      realm: typeof f.realm === 'string' ? f.realm : def.realm,
+      cap: typeof f.cap === 'string' ? f.cap : def.cap,
+      effort: typeof f.effort === 'string' ? f.effort : def.effort,
+      promo: typeof f.promo === 'string' ? f.promo : def.promo,
+      paid: typeof f.paid === 'string' ? f.paid : def.paid,
+      sort: typeof f.sort === 'string' ? f.sort : def.sort,
+    };
+  } catch (e) { return def; }
+}
+function mdSaveFilter() {
+  try { localStorage.setItem(MD_FILTER_KEY, JSON.stringify(mdFilter)); } catch (e) { /* 隐私模式等场景静默 */ }
+}
+
 function resetModelFilter() {
-  mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+  mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', paid: '', sort: 'default' };
   $('mdQ').value = ''; $('mdRealm').value = ''; $('mdCap').value = '';
-  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdSort').value = 'default';
+  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdPaid').value = '';
+  $('mdSort').value = 'default';
+  mdSaveFilter();
   renderModels();
 }
 
@@ -838,15 +917,46 @@ function resetModelFilter() {
 let mdQTimer = null;
 $('mdQ').oninput = () => {
   clearTimeout(mdQTimer);
-  mdQTimer = setTimeout(() => { mdFilter.q = $('mdQ').value.trim(); renderModels(); }, 120);
+  mdQTimer = setTimeout(() => { mdFilter.q = $('mdQ').value.trim(); mdSaveFilter(); renderModels(); }, 120);
 };
-for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdEffort', 'effort'], ['mdPromo', 'promo'], ['mdSort', 'sort']]) {
+for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdEffort', 'effort'], ['mdPromo', 'promo'], ['mdPaid', 'paid'], ['mdSort', 'sort']]) {
   const el = $(id);
   if (!el) continue;
-  el.onchange = () => { mdFilter[key] = el.value; renderModels(); };
+  el.onchange = () => { mdFilter[key] = el.value; mdSaveFilter(); renderModels(); };
 }
 $('mdReset').onclick = resetModelFilter;
 $('btnModels').onclick = loadModels;
+
+/* 点击模型 ID 复制：模型表一次几十条，逐个手选 ID 容易漏字符。
+   事件委托绑在 tbody 上（行是整体重渲染的，逐行绑会随重渲丢失）。 */
+$('mdBody').addEventListener('click', ev => {
+  const el = ev.target.closest('.mid[data-copy]');
+  if (!el) return;
+  const id = el.dataset.copy || '';
+  if (!id) return;
+  const done = () => toast('已复制 ' + id, 'ok');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(done, () => fallbackCopy(id, done));
+  } else {
+    fallbackCopy(id, done);
+  }
+});
+// fallbackCopy http 环境下 navigator.clipboard 不可用（非安全上下文），
+// 用临时 textarea + execCommand 兜底。
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) { done(); return; }
+  } catch (e) { /* 落到 toast */ }
+  toast('复制失败，请手动选取', 'err');
+}
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
 let logCh = 'all';

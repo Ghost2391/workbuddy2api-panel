@@ -502,6 +502,17 @@ func panelModelEntry(realm string, mi upstream.ModelInfo, remoteEfforts []string
 	if mi.PromoNote != "" {
 		entry["promo_note"] = mi.PromoNote
 	}
+	// 账号类型档位（modelTiers）：命中即「需 Pro」——免费账号调用会被上游 11158
+	// 拒绝，与积分倍率无关。前端据此打标签 + 筛选 + 升级指引。
+	if mi.TierLabel != "" {
+		entry["tier_label"] = mi.TierLabel
+	}
+	if mi.TierNote != "" {
+		entry["tier_note"] = mi.TierNote
+	}
+	if mi.TierRequiredUserType != "" {
+		entry["tier_required_user_type"] = mi.TierRequiredUserType
+	}
 	if mi.MaxAllowedSize > 0 {
 		entry["max_allowed_size"] = mi.MaxAllowedSize
 	}

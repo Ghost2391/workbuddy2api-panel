@@ -384,14 +384,15 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 const start = src.indexOf('function mdRateValue');
 const end = src.indexOf('function mdRowHtml');
 if (start < 0 || end < 0) throw new Error('model filter helpers not found');
-const ctx = { Number, String, Array, Object, isFinite, parseFloat };
+const ctx = { Number, String, Array, Object, isFinite, parseFloat, esc: s => String(s) };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.mdMatch=mdMatch; this.mdSortList=mdSortList; this.mdRateValue=mdRateValue;', ctx);
+vm.runInContext(src.slice(start, end) + '\nthis.mdMatch=mdMatch; this.mdSortList=mdSortList; this.mdRateValue=mdRateValue; this.mdPaidOf=mdPaidOf; this.mdPriceOf=mdPriceOf; this.mdTierTag=mdTierTag; this.mdPaidTag=mdPaidTag;', ctx);
 const models = [
   { id: 'cn:glm-5.2', name: 'GLM-5.2', vendor: 'Zhipu', tags: ['视觉'], supports_tool_call: true, supports_images: true, supports_reasoning: true, can_disable_thinking: true, supported_efforts: ['high', 'xhigh'], default_effort: 'high', is_default: false, credits: '0.79', promo_factor: 0.5, promo_credits: '0.40', promo_label: '夜间折扣', context_length: 1000000, max_output_tokens: 131000 },
   { id: 'cn:hy3', name: 'Hy3', supports_tool_call: true, supports_images: true, supports_reasoning: true, can_disable_thinking: false, supported_efforts: ['low', 'high'], default_effort: 'high', is_default: false, credits: '0', promo_factor: 0, promo_credits: '0', promo_label: '限时免费', context_length: 192000, max_output_tokens: 64000 },
   { id: 'global:hy3', name: 'Hy3 Global', supports_tool_call: false, supports_images: false, supports_reasoning: false, supported_efforts: [], is_default: false, credits: '0.11', context_length: 1000000, max_output_tokens: 393000 },
   { id: 'cn:auto', name: 'Auto', supports_tool_call: true, supports_images: true, supports_reasoning: true, is_default: true, credits: null, context_length: 256000, max_output_tokens: 32000 },
+  { id: 'global:gpt-6.1-sol', name: 'GPT-6.1-Sol', supports_tool_call: true, supports_reasoning: true, is_default: false, credits: 'x1.33', tier_label: 'Pro Only', tier_note: '模型仅面向 Pro 用户开放', tier_required_user_type: 'standard', context_length: 272000, max_output_tokens: 128000 },
 ];
 const ids = list => list.map(m => m.id);
 const filter = f => ids(ctx.mdSortList(models.filter(m => ctx.mdMatch(m, f)), f));
@@ -410,11 +411,24 @@ process.stdout.write(JSON.stringify({
   q: filter({ q: 'glm zhipu' }),
   qMiss: filter({ q: 'glm nosuch' }),
   sortRate: filter({ sort: 'rate' }),
+  sortRateDesc: filter({ sort: 'rate-desc' }),
   sortContext: filter({ sort: 'context' }),
   sortOutput: filter({ sort: 'output' }),
   sortName: filter({ sort: 'name' }),
   rateFree: ctx.mdRateValue(models[1]),
   rateMissing: ctx.mdRateValue(models[3]),
+  paidTier: filter({ paid: 'tier' }),
+  paidPaid: filter({ paid: 'paid' }),
+  paidFree: filter({ paid: 'free' }),
+  paidUnknown: filter({ paid: 'unknown' }),
+  paidOfTier: ctx.mdPaidOf(models[4]),
+  paidOfPaid: ctx.mdPaidOf(models[0]),
+  paidOfFree: ctx.mdPaidOf(models[1]),
+  paidOfUnknown: ctx.mdPaidOf(models[3]),
+  tierTag: ctx.mdTierTag(models[4]).includes('Pro Only') && ctx.mdTierTag(models[4]).includes('tag bad'),
+  tierTagEmpty: ctx.mdTierTag(models[0]) === '',
+  paidTagPaid: ctx.mdPaidTag(models[0]).includes('付费'),
+  paidTagFree: ctx.mdPaidTag(models[1]).includes('免费'),
 }));`
 	f, err := os.CreateTemp(t.TempDir(), "model-filter-*.cjs")
 	if err != nil {
@@ -428,11 +442,11 @@ process.stdout.write(JSON.stringify({
 	if err != nil {
 		t.Fatalf("model filter node test failed: %v\n%s", err, out)
 	}
-	const want = `{"all":["cn:glm-5.2","cn:hy3","global:hy3","cn:auto"],` +
+	const want = `{"all":["cn:glm-5.2","cn:hy3","global:hy3","cn:auto","global:gpt-6.1-sol"],` +
 		`"realm":["cn:glm-5.2","cn:hy3","cn:auto"],` +
-		`"tool":["cn:glm-5.2","cn:hy3","cn:auto"],` +
+		`"tool":["cn:glm-5.2","cn:hy3","cn:auto","global:gpt-6.1-sol"],` +
 		`"vision":["cn:glm-5.2","cn:hy3","cn:auto"],` +
-		`"reasoning":["cn:glm-5.2","cn:hy3","cn:auto"],` +
+		`"reasoning":["cn:glm-5.2","cn:hy3","cn:auto","global:gpt-6.1-sol"],` +
 		`"isDefault":["cn:auto"],` +
 		`"effortOff":["cn:glm-5.2"],` +
 		`"effortLow":["cn:hy3"],` +
@@ -441,11 +455,18 @@ process.stdout.write(JSON.stringify({
 		`"discount":["cn:glm-5.2"],` +
 		`"q":["cn:glm-5.2"],` +
 		`"qMiss":[],` +
-		`"sortRate":["cn:hy3","global:hy3","cn:glm-5.2","cn:auto"],` +
-		`"sortContext":["cn:glm-5.2","global:hy3","cn:auto","cn:hy3"],` +
-		`"sortOutput":["global:hy3","cn:glm-5.2","cn:hy3","cn:auto"],` +
-		`"sortName":["cn:auto","cn:glm-5.2","cn:hy3","global:hy3"],` +
-		`"rateFree":0,"rateMissing":null}`
+		`"sortRate":["cn:hy3","global:hy3","cn:glm-5.2","global:gpt-6.1-sol","cn:auto"],` +
+		`"sortRateDesc":["global:gpt-6.1-sol","cn:glm-5.2","global:hy3","cn:hy3","cn:auto"],` +
+		`"sortContext":["cn:glm-5.2","global:hy3","global:gpt-6.1-sol","cn:auto","cn:hy3"],` +
+		`"sortOutput":["global:hy3","cn:glm-5.2","global:gpt-6.1-sol","cn:hy3","cn:auto"],` +
+		`"sortName":["cn:auto","cn:glm-5.2","cn:hy3","global:gpt-6.1-sol","global:hy3"],` +
+		`"rateFree":0,"rateMissing":null,` +
+		`"paidTier":["global:gpt-6.1-sol"],` +
+		`"paidPaid":["cn:glm-5.2","global:hy3","global:gpt-6.1-sol"],` +
+		`"paidFree":["cn:hy3"],` +
+		`"paidUnknown":["cn:auto"],` +
+		`"paidOfTier":"paid","paidOfPaid":"paid","paidOfFree":"free","paidOfUnknown":"unknown",` +
+		`"tierTag":true,"tierTagEmpty":true,"paidTagPaid":true,"paidTagFree":true}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Fatalf("model filter=%s\nwant %s", out, want)
 	}

@@ -812,9 +812,17 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <option value="free">限时免费</option>
             <option value="discount">打折（非免费）</option>
           </select>
+          <select id="mdPaid" aria-label="按付费性质筛选">
+            <option value="">全部模型</option>
+            <option value="tier">需 Pro（账号类型）</option>
+            <option value="paid">付费（倍率 &gt; 0）</option>
+            <option value="free">免费（倍率 = 0）</option>
+            <option value="unknown">无价格信息</option>
+          </select>
           <select id="mdSort" aria-label="排序方式">
             <option value="default">上游默认顺序</option>
             <option value="rate">积分倍率 低 → 高</option>
+            <option value="rate-desc">积分倍率 高 → 低</option>
             <option value="context">上下文长度 大 → 小</option>
             <option value="output">最大输出 大 → 小</option>
             <option value="name">模型 ID A → Z</option>

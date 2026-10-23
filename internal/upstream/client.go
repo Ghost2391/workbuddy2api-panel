@@ -1312,6 +1312,17 @@ type ModelInfo struct {
 	PromoCredits string   // 折扣后倍率原文（如 "0x" / "0.50x"），仅展示
 	PromoLabel   string   // 徽章文案（限时免费 / 夜间折扣 / 错峰使用）
 	PromoNote    string   // hover 说明原文（含时段/日期描述）
+
+	// 账号类型档位（modelTiers，/v3/config data.modelTiers）：上游把「仅 Pro 可用的
+	// 模型」显式列在这里（实测 12 条：gpt-6-astra / gpt-6.1-sol / gpt-6-sol /
+	// gpt-6-luna / gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna / gpt-5.5 / gpt-5.4 /
+	// grok-4.7 / gemini-3.8-flash / gemini-3.5-flash），免费账号请求这些模型会被
+	// 上游以 11158「model ... is not allowed for user type [personal_free_user]」
+	// 拒绝——这与积分倍率**完全无关**（x1.33 计费，但账号等级不够照样调不了），
+	// 面板据此显示「需 Pro」标签与升级指引，避免用户误以为是积分问题。
+	TierLabel            string // 徽章文案（Pro Only）
+	TierNote             string // hover 说明原文（模型仅面向 Pro 用户开放）
+	TierRequiredUserType string // 上游声明的账号类型要求（standard = 需 Pro/标准版）
 }
 
 // dynModelEntry 上游模型目录（CN /console 与 global /v2 同构）的单条模型解析形态，
@@ -1636,6 +1647,72 @@ type v3ModelPromotion struct {
 	} `json:"schedule"`
 }
 
+// v3ModelTier /v3/config data.modelTiers 单条账号类型档位定义（2026-10-22 实测
+// global /v3/config 下发 1 条 id=gpt-pro-only，覆盖 12 个 GPT/Grok/Gemini 模型）。
+// 与 modelPromotions 同构：按 modelIds 匹配目录条目，命中即挂徽章/说明。
+type v3ModelTier struct {
+	Enabled           bool     `json:"enabled"`
+	Priority          int      `json:"priority"`
+	ModelIDs          []string `json:"modelIds"`
+	Tier              string   `json:"tier"`
+	RequiredUserType  string   `json:"requiredUserType"`
+	Badge             *struct {
+		Label string `json:"label"`
+	} `json:"badge"`
+	Hover *struct {
+		TextZh string `json:"textZh"`
+		TextEn string `json:"textEn"`
+		Action *struct {
+			LabelEn string `json:"labelEn"`
+			LabelZh string `json:"labelZh"`
+			Type    string `json:"type"`
+			URL     string `json:"url"`
+		} `json:"action"`
+	} `json:"hover"`
+}
+
+// applyModelTiers 把账号类型档位挂到目录条目：命中 modelIds 的模型补上
+// TierLabel/TierNote/TierRequiredUserType。多档位命中时取 priority 最高
+// （与 applyModelPromotions 同口径）；无徽章的档位只透出 requiredUserType。
+func applyModelTiers(out map[string]ModelInfo, tiers []v3ModelTier) {
+	if len(tiers) == 0 || len(out) == 0 {
+		return
+	}
+	type cand struct {
+		prio int
+		t    *v3ModelTier
+	}
+	best := map[string]cand{}
+	for i := range tiers {
+		t := &tiers[i]
+		if !t.Enabled {
+			continue
+		}
+		for _, id := range t.ModelIDs {
+			if _, ok := out[id]; !ok {
+				continue
+			}
+			if b, seen := best[id]; !seen || t.Priority > b.prio {
+				best[id] = cand{prio: t.Priority, t: t}
+			}
+		}
+	}
+	for id, c := range best {
+		mi := out[id]
+		if c.t.Badge != nil {
+			mi.TierLabel = c.t.Badge.Label
+		}
+		if c.t.Hover != nil {
+			mi.TierNote = c.t.Hover.TextZh
+			if mi.TierNote == "" {
+				mi.TierNote = c.t.Hover.TextEn
+			}
+		}
+		mi.TierRequiredUserType = c.t.RequiredUserType
+		out[id] = mi
+	}
+}
+
 // promoZone 优惠时区：上游恒 Asia/Shanghai（UTC+8 无夏令时），用 FixedZone 免依赖
 // 系统 tzdata（Windows 无 IANA 库时 LoadLocation 会失败）。
 var promoZone = time.FixedZone("CST", 8*3600)
@@ -1907,6 +1984,7 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 				} `json:"ModelTrialBanner"`
 			} `json:"productFeaturesConfig"`
 			ModelPromotions []v3ModelPromotion `json:"modelPromotions"`
+			ModelTiers      []v3ModelTier      `json:"modelTiers"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -1951,6 +2029,11 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 		mi.Tags = nil
 		out[id] = mi
 	}
+	// 挂账号类型档位（modelTiers）：上游把「仅 Pro 可用」的模型显式列出，免费账号
+	// 请求会被 11158 拒绝。与积分无关，面板据此显示「需 Pro」标签，别让用户把
+	// 「账号等级不够」误读成「积分不够」。
+	applyModelTiers(out, env.Data.ModelTiers)
+
 	// 挂当前生效的限时优惠（modelPromotions）：Credits 字段是**牌价**（转正后基准
 	// 倍率，如 hy4-preview-f 的 x0.29），而 WorkBuddy 客户端显示的是生效价（试用/
 	// 折扣窗口内 factor 打折）——面板据此展示「生效价 + 标签 + 牌价」。
