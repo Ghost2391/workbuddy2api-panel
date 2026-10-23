@@ -264,6 +264,7 @@ function rateLimitMeta(row, now) {
     };
   }
   const title = [model, resetAt ? '上游重置：' + fmtLocalDateTime(resetAt) : '上游重置：时间未知'];
+  let detail;
   if (until && resetAt && until < resetAt) {
     // 双时钟（issue #171 问题二）：黄框出现/消失由 until 决定（网关为防超长
     // 限流拖死全池，把重试封顶在 now+softRateMax），主文字却按 resetAt 显示，
@@ -284,11 +285,37 @@ function rateLimitMeta(row, now) {
 function rateLimitRowsHtml(rows, now) {
   const list = Array.isArray(rows) ? rows.filter(row => row && row.model) : [];
   if (!list.length) return '';
+  // data-until / data-reset 供 tickRateLimits 每秒就地刷新倒计时（不再等 5s 轮询）。
+  // 时间戳取毫秒 epoch：本地解析无歧义，且跨时区部署也按浏览器本地展示。
   return '<div class="rate-limits">' + list.map(row => {
     const m = rateLimitMeta(row, now);
+    const until = parseAPITime(row && row.until) || 0;
+    const reset = parseAPITime(row && row.reset_at) || 0;
     return '<div class="rate-limit ' + (m.kind === 'model_unavailable' ? 'model-unavailable' : '') +
-      '" title="' + esc(m.title) + '"><b>' + esc(m.model) + '</b><span>' + esc(m.detail) + '</span></div>';
+      '" data-until="' + until + '" data-reset="' + reset + '" data-kind="' + esc(m.kind) +
+      '" data-model="' + esc(m.model) + '" title="' + esc(m.title) + '"><b>' + esc(m.model) + '</b><span>' + esc(m.detail) + '</span></div>';
   }).join('') + '</div>';
+}
+
+/* 限流倒计时每秒 tick：/status 是 5s 轮询，倒计时文字若只在轮询时刷新会「跳 5 秒」，
+   看起来像卡住。这里按 DOM 上的 data-until/data-reset 就地重算剩余秒数，到点自然归零
+   （下一次轮询会把这行整行摘掉，因为上游已恢复）。零上游请求。 */
+let rlTimer = null;
+function tickRateLimits() {
+  const nodes = document.querySelectorAll('.rate-limit[data-until]');
+  if (!nodes.length) { if (rlTimer) { clearInterval(rlTimer); rlTimer = null; } return; }
+  if (!rlTimer) rlTimer = setInterval(tickRateLimits, 1000);
+  const now = Date.now();
+  for (const el of nodes) {
+    const until = Number(el.dataset.until || 0);
+    const reset = Number(el.dataset.reset || 0);
+    const kind = el.dataset.kind || 'rate_limit';
+    const model = el.dataset.model || '';
+    const span = el.querySelector('span');
+    if (!span) continue;
+    const m = rateLimitMeta({ model, kind, until: until ? new Date(until).toISOString() : null, reset_at: reset ? new Date(reset).toISOString() : null }, now);
+    span.textContent = m.detail;
+  }
 }
 
 function formatTokenCount(tokens) {
@@ -861,8 +888,50 @@ function mdRowHtml(m, pr) {
     '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
     '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
-    outCell(m, pr) + '</tr>';
+    outCell(m, pr) +
+    '<td class="num"><button class="xs ghost md-test" data-model="' + esc(m.id) + '" title="发一次最小真实请求（prompt 2 token / 输出上限 64）验证连通性；失败不计费">测试</button><span class="md-test-out"></span></td></tr>';
 }
+
+/* 模型连通性测试：POST /panel/api/models/test。
+   结果就地写在按钮旁（不弹窗）——逐个测的时候视线不用来回跳。
+   成功/失败都会写，失败带分类结论（11158 提示升级 Pro、6004 提示限流等）。 */
+async function testModel(model, btn) {
+  const out = btn.parentElement.querySelector('.md-test-out');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '测…';
+  if (out) out.textContent = '';
+  try {
+    const r = await api('models/test?model=' + encodeURIComponent(model), { method: 'POST' });
+    const lat = r.latency_ms != null ? ' · ' + (r.latency_ms < 1000 ? r.latency_ms + 'ms' : (r.latency_ms / 1000).toFixed(1) + 's') : '';
+    const acct = r.account ? ' · ' + r.account : '';
+    const tok = r.ok && r.tokens ? ' · ' + r.tokens + ' tok' : '';
+    if (out) {
+      out.innerHTML = '<span class="tag ' + (r.ok ? 'ok' : 'bad') + '" title="' + esc(r.detail || r.hint || '') + '">' +
+        esc(r.ok ? '可用' : (r.kind || '失败')) + '</span>' +
+        '<div class="note">' + esc((r.hint || '') + lat + acct + tok) + '</div>';
+    }
+  } catch (e) {
+    if (out) out.innerHTML = '<span class="tag bad">请求失败</span><div class="note">' + esc(e.message) + '</div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+$('mdBody').addEventListener('click', ev => {
+  const btn = ev.target.closest('.md-test');
+  if (btn) { testModel(btn.dataset.model, btn); return; }
+  const el = ev.target.closest('.mid[data-copy]');
+  if (!el) return;
+  const id = el.dataset.copy || '';
+  if (!id) return;
+  const done = () => toast('已复制 ' + id, 'ok');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(done, () => fallbackCopy(id, done));
+  } else {
+    fallbackCopy(id, done);
+  }
+});
 
 function renderModels() {
   const tb = $('mdBody');
@@ -1666,6 +1735,8 @@ function refreshVisible() {
   if (view === 'accounts') { loadOverview(true); renderCachedCompensation(); }
   else if (view === 'logs') loadLogs();
   else if (view === 'taskscenter') reattachQueueView();
+  // 限流倒计时每秒 tick 只在账号池视图跑（其他视图没有这些节点，函数内部会自停）。
+  tickRateLimits();
 }
 function start() {
   loadOverview(true);

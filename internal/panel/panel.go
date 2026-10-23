@@ -12,6 +12,7 @@ package panel
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,11 +21,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/credithist"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
@@ -191,6 +192,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
+	p.mux.HandleFunc("POST /panel/api/models/test", p.withAuth(p.modelTest))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
 	p.mux.HandleFunc("GET /panel/api/compensation", p.withAuth(p.compensation))
@@ -567,6 +569,179 @@ func (p *Panel) modelProbes(w http.ResponseWriter, r *http.Request) {
 		out["updated_at"] = fi.ModTime().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ---------------------------------------------------------------------------
+// 模型连通性测试（主动探活）
+// ---------------------------------------------------------------------------
+
+// modelTestResult 单次模型测试的结论（前端据此在模型行内联展示）。
+// 关键点：把上游业务码翻成**可操作的人话**，而不是只报 HTTP 状态——
+// 11158（账号类型不支持）要提示升级 Pro，6004 要提示恢复时间，
+// 这两类是「换号也没用」的确定结论，用户最需要看到。
+type modelTestResult struct {
+	OK        bool   `json:"ok"`
+	Model     string `json:"model"`
+	Realm     string `json:"realm"`
+	Account   string `json:"account"`
+	LatencyMS int64  `json:"latency_ms"`
+	Kind      string `json:"kind"`    // ok / rate_limit / denied / no_model / busy / content_blocked / server / client
+	Hint      string `json:"hint"`    // 给人看的结论
+	Detail    string `json:"detail"`  // 上游原文（截断），排障用
+	Tokens    int64  `json:"tokens"`  // 本次消耗的 completion tokens（实测成功时才有）
+	Credits   string `json:"credits"` // 该模型的积分倍率（成功时从目录带入）
+}
+
+// modelTest 对单个模型发一次最小真实请求，回报连通性与分类结论。
+//
+// 为什么要主动测：目录里列出模型只代表上游「有这个模型名」，不代表**当前账号
+// 有权限**。11158（账号类型不支持）只有真发一次才知道，被动等用户撞错再排查
+// 体验很差（本项目已按 modelTiers 给目录打了「需 Pro」标签，但那是上游声明，
+// 与账号实际权限仍可能有偏差）。
+//
+// 成本口径：一次最小对话（prompt 2 token / max_tokens 64），成功才计费。
+// 失败不计费（上游在计费前就拒绝了）。
+func (p *Panel) modelTest(w http.ResponseWriter, r *http.Request) {
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
+	if model == "" {
+		writeErr(w, http.StatusBadRequest, "missing model")
+		return
+	}
+	// 拆 realm 前缀：面板显示的 id 就是调用值（cn:xxx / global:xxx）。
+	realm := "cn"
+	bare := model
+	if i := strings.IndexByte(model, ':'); i > 0 {
+		realm, bare = model[:i], model[i+1:]
+	}
+	if realm != "cn" && realm != "global" {
+		writeErr(w, http.StatusBadRequest, "bad realm prefix")
+		return
+	}
+
+	// 选号：优先「该模型当前可用」的账号（healthyForModel），避免拿正在被
+	// 6004 冷却的号去测——那测出来的是限流而不是模型本身的状态。
+	// 空 tried map = 不排除任何号；与网关选号同一函数，口径一致。
+	acct := p.cfg.Pool.PickExcludingForRealm(map[string]bool{}, bare, realm)
+	if acct == nil {
+		writeErr(w, http.StatusServiceUnavailable, "no account available for realm "+realm)
+		return
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      bare,
+		"messages":   []map[string]any{{"role": "user", "content": "ping"}},
+		"max_tokens": 64, // 最小成本：只要连通即可，不需要长输出
+		"stream":     true,
+	})
+
+	start := time.Now()
+	rc, status, respBody, err := p.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, "", upstream.ChatMeta{})
+	latency := time.Since(start).Milliseconds()
+
+	res := modelTestResult{
+		Model:     model,
+		Realm:     realm,
+		Account:   logfmt.Label(acct.UID, acct.Nickname),
+		LatencyMS: latency,
+	}
+
+	if err != nil || status >= 400 {
+		raw := string(respBody)
+		res.Detail = truncateStr(raw, 300)
+		res.Kind, res.Hint = modelTestVerdict(upstream.Classify(status, raw), raw)
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+
+	// 成功路径：读干 SSE 取末帧 usage（同时保证连接正常关闭不残留）。
+	tokens, _ := readChatUsage(rc)
+	rc.Close()
+
+	res.OK = true
+	res.Kind = "ok"
+	res.Hint = "连通正常"
+	res.Tokens = tokens
+	if rate := p.cfg.Upstream.ModelRate(realm, bare); rate != "" {
+		res.Credits = rate
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// modelTestVerdict 把上游错误分类翻成可操作的结论。重点区分「换号也没用」
+// （denied/no_model/busy/content_blocked）与「换号可能有用」（server/client）。
+func modelTestVerdict(kind upstream.ErrKind, raw string) (string, string) {
+	switch kind {
+	case upstream.ErrModelBlocked:
+		if upstream.ModelBlockReasonFor(raw) == upstream.ModelForbiddenReason {
+			return "denied", "账号类型不支持该模型（11158）：升级 Pro 或换有权限的账号"
+		}
+		return "no_model", "上游无此模型（11102）：目录残留，换号无用"
+	case upstream.ErrChannelRefused:
+		return "channel_refused", "通道校验失败（11-128）：非账号问题，检查出口/指纹"
+	case upstream.ErrContentBlocked:
+		return "content_blocked", "内容被审核拦截：与账号无关，调整 prompt 重试"
+	case upstream.ErrSoftRate:
+		return "rate_limit", "账号被限流（429）：等恢复或换号"
+	case upstream.ErrUpstreamBusy:
+		return "busy", "上游队列满载（6021）：稍后重试，换号无用"
+	case upstream.ErrHardCredit:
+		return "no_credit", "账号积分耗尽：换号或充值"
+	case upstream.ErrSessionDead:
+		return "session_dead", "会话已失效（12153）：需重新登录"
+	case upstream.ErrAccountFault:
+		return "account_fault", "账号级故障：换号或申诉"
+	case upstream.ErrPromptTooLong:
+		return "prompt_too_long", "上下文超限（11115）：与账号无关"
+	case upstream.ErrServer:
+		return "server", "上游 5xx：稍后重试，换号可能有用"
+	default:
+		return "client", "请求被拒（" + truncateStr(raw, 80) + "）：换号可能有用"
+	}
+}
+
+// readChatUsage 从 SSE 流里取末帧 usage.completion_tokens。
+// 读干整条流（上限 1MB）：既拿用量，也保证连接正常关闭不残留。
+func readChatUsage(rc io.ReadCloser) (int64, bool) {
+	defer func() { _, _ = io.Copy(io.Discard, io.LimitReader(rc, 1<<20)) }()
+	buf := make([]byte, 64<<10)
+	carry := ""
+	for {
+		n, err := rc.Read(buf)
+		if n > 0 {
+			carry += string(buf[:n])
+			// 逐 data: 行扫，遇到带 usage 的帧即取（末帧）。
+			for {
+				i := strings.Index(carry, "\n")
+				if i < 0 {
+					break
+				}
+				line := strings.TrimSpace(carry[:i])
+				carry = carry[i+1:]
+				if !strings.HasPrefix(line, "data:") {
+					continue
+				}
+				payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				if payload == "" || payload == "[DONE]" {
+					continue
+				}
+				var frame struct {
+					Usage *struct {
+						CompletionTokens int64 `json:"completion_tokens"`
+					} `json:"usage"`
+				}
+				if json.Unmarshal([]byte(payload), &frame) == nil && frame.Usage != nil && frame.Usage.CompletionTokens > 0 {
+					return frame.Usage.CompletionTokens, true
+				}
+			}
+			// 防 carry 无限增长（用量帧在末帧，不会积累这么多；防御性截断）。
+			if len(carry) > 256<<10 {
+				carry = carry[len(carry)-4096:]
+			}
+		}
+		if err != nil {
+			return 0, false
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
