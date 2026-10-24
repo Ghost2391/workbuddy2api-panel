@@ -324,8 +324,14 @@ func main() {
 	// 清扫回调返回统计汇总（测试/日志可观测），调度器 hook 只要求 func()：
 	// 这里收掉返回值——汇总已由 panel 侧内部日志输出。
 	sch.SetTaskSweepHook(func() { pn.RunTaskSweepOnce() })
-	log.SetOutput(io.MultiWriter(os.Stderr, pn.Logs()))
-	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
+	// 控制台两路改成异步写（见 asyncwriter.go）：Windows 控制台 QuickEdit 选中
+	// 文本时会挂起 stdout/stderr 写入，同步写会把持有锁的请求链路一起卡死
+	// （症状：页面请求偶尔挂住，回终端按回车就恢复）。面板环缓冲仍同步写，
+	// 保证「运行日志」页不缺行。
+	consoleLog := newAsyncLogWriter(os.Stderr, 512)
+	consoleChatLog := newAsyncLogWriter(os.Stdout, 512)
+	log.SetOutput(io.MultiWriter(consoleLog, pn.Logs()))
+	server.SetChatLogOutput(io.MultiWriter(consoleChatLog, pn.Logs()))
 
 	h := server.NewHandler(server.Config{
 		Pool:         p,
