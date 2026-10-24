@@ -439,13 +439,22 @@ function renderAccounts(list) {
       : (s.credits_total > 0
         ? Math.min(100, Math.round((s.credits || 0) / s.credits_total * 100))
         : Math.round((s.credits || 0) / maxCred * 100));
+    // 已用额度：只有拿到总额（credits_total > 0）才有意义——没有总额时「已用」
+    // 无从计算，宁可不显示也不猜。上游口径：CapacityUsed = 总额 - 剩余，
+    // 按计费周期（月）累计，与「今日消耗」不是一回事。
+    let used = null, usedPct = 0;
+    if (!unlimited && s.credits_total > 0 && s.credits != null) {
+      used = Math.max(0, s.credits_total - (s.credits || 0));
+      usedPct = Math.min(100, Math.round(used / s.credits_total * 100));
+    }
     // 成本台账 tooltip（model_costs）：每模型实测单价（≤0 = 实测免费），运维据此
     // 看「为什么总选它」——免费号垄断 / 单价排序一眼可见。
     let credTip;
     if (unlimited) credTip = '企业版不限量（上游 limitNum=-1）';
     else if (s.credits_total > 0) {
       credTip = (s.enterprise ? '企业版剩余额度 ' : '剩余 ')
-        + s.credits + ' / ' + (s.enterprise ? '分配 ' : '总额 ') + s.credits_total + '（' + pct + '%）';
+        + s.credits + ' / ' + (s.enterprise ? '分配 ' : '总额 ') + s.credits_total + '（' + pct + '%）'
+        + '\n本期已用 ' + used + '（' + usedPct + '%）';
     } else credTip = '积分（相对池内最高）';
     const costs = (s.model_costs || []).filter(c => c.model);
     if (costs.length) {
@@ -464,7 +473,8 @@ function renderAccounts(list) {
       '<td class="mark" aria-hidden="true"><i></i></td>' +
       '<td class="who"><div class="nm">' + remarkName(s.uid, s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') + '</div><div class="id">' + esc(short) + '</div></td>' +
       '<td>' + tag + note + rateLimits + '</td>' +
-      '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
+      '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div>' +
+        (used == null ? '' : '<div class="used">已用 <b>' + used + '</b> · ' + usedPct + '%</div>') + '</td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
       '<td class="num">' + (s.in_flight || 0) + '</td>' +
       '<td class="num usage-cell" title="' + esc(usageTitle) + '"><span class="usage-line" aria-label="' + esc(usageTitle) + '">' +
