@@ -52,9 +52,21 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 }
 
+// noStore 禁掉静态资源缓存。面板资源是 go:embed 进二进制的，文件名固定（app.js），
+// 没有内容哈希可供缓存失效——一旦浏览器按启发式规则缓存住旧版，升级二进制后
+// 前端仍在跑旧 JS（典型症状：后端数据正常，页面表格空白/功能消失，硬刷新才好）。
+// 这里统一 no-store：面板是内网运维页面，体积几十 KB，省这点流量不值得拿
+// 「升级不生效」换。API 响应同样不该被缓存（含实时状态）。
+func noStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+}
+
 // index 输出面板页面（静态无秘密；数据接口 /panel/api/* 才走鉴权）。
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	noStore(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(indexHTML)
@@ -63,6 +75,7 @@ func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 // appScript 输出前端逻辑（同源脚本，供 CSP script-src 'self' 加载）。
 func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	noStore(w)
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(appJS)
@@ -72,6 +85,7 @@ func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 // 单独成文而非写进 index.html：上游频繁改 index.html，独立文件可避免同步上游时反复冲突。
 func (p *Panel) mobileStyle(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	noStore(w)
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(mobileCSS)
@@ -80,6 +94,7 @@ func (p *Panel) mobileStyle(w http.ResponseWriter, r *http.Request) {
 // mobileScript 输出手机端联动逻辑（同源脚本，须在 app.js 之后加载）。
 func (p *Panel) mobileScript(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	noStore(w)
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(mobileJS)

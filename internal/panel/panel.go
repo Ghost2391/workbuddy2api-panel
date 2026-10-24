@@ -1231,6 +1231,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	raw, _ := json.Marshal(v)
+	noStore(w) // API 响应含实时状态，禁缓存（否则浏览器/中间层可能复用旧数据）
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(raw)
