@@ -576,3 +576,52 @@ func TestPrepareBodyDropsReasoningTextParts(t *testing.T) {
 		}
 	}
 }
+
+// TestEnsureConsoleSystem 国际版首条必须是 system 角色且带有内容：
+// - 空数组时自动注入一条 system
+// - 只有 user 时自动在最前补一条 system
+// - 首条为 developer 时归一化为 system
+// - 首条已为非空 system 时保持原样
+func TestEnsureConsoleSystem(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          string
+		wantFirst   string // 首条 role
+		wantContent string // 首条 content
+		wantCount   int    // messages 数组长度
+	}{
+		{"空 messages 注入默认 system",
+			`{"messages":[]}`, "system", "You are a helpful assistant.", 1},
+		{"只有 user 消息时前置补 system",
+			`{"messages":[{"role":"user","content":"hello"}]}`, "system", "You are a helpful assistant.", 2},
+		{"首条为 developer 改写为 system",
+			`{"messages":[{"role":"developer","content":"prompt"}]}`, "system", "prompt", 1},
+		{"首条为 developer 但内容为空时补默认提示词",
+			`{"messages":[{"role":"developer","content":""}]}`, "system", "You are a helpful assistant.", 1},
+		{"首条为 system 且内容正常时保留原样",
+			`{"messages":[{"role":"system","content":"custom"},{"role":"user","content":"hi"}]}`, "system", "custom", 2},
+		{"首条为 system 但内容为空时填充默认提示词",
+			`{"messages":[{"role":"system","content":""},{"role":"user","content":"hi"}]}`, "system", "You are a helpful assistant.", 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ensureConsoleSystem([]byte(tc.in))
+			var obj map[string]any
+			if err := json.Unmarshal(out, &obj); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			msgs := obj["messages"].([]any)
+			if len(msgs) != tc.wantCount {
+				t.Fatalf("count=%d want %d", len(msgs), tc.wantCount)
+			}
+			first := msgs[0].(map[string]any)
+			if first["role"] != tc.wantFirst {
+				t.Errorf("role=%q want %q", first["role"], tc.wantFirst)
+			}
+			if first["content"] != tc.wantContent {
+				t.Errorf("content=%q want %q", first["content"], tc.wantContent)
+			}
+		})
+	}
+}

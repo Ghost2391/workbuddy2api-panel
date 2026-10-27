@@ -1340,6 +1340,7 @@ const CFG_MAP = {
   ttl: ['session_sticky', 'ttl'],
   timeout_seconds: ['upstream', 'timeout_seconds'], header_timeout_seconds: ['upstream', 'header_timeout_seconds'],
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
+  client_version: ['upstream', 'client_version'], cli_version: ['upstream', 'cli_version'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
@@ -1356,7 +1357,7 @@ const CFG_MAP = {
  * 刻意不含 api_key：清空它 = 关闭整个鉴权，误触代价是网关变成无鉴权公开服务。
  * 该字段（以及提示文案"留空 = 不鉴权"与现状不符的问题）单独处理。
  */
-const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file']);
+const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file', 'client_version', 'cli_version']);
 
 function dig(obj, path) { return path.reduce((o, k) => (o == null ? undefined : o[k]), obj); }
 function put(obj, path, val) {
@@ -1381,6 +1382,10 @@ async function loadConfig() {
     }
     markDurationFields(); // 回填后重置校验态（清掉残留红框；现值来自后端必然合法）
     $('cfgNote').textContent = '';
+    if (typeof officialVerCache !== 'undefined' && typeof renderOfficialVersion === 'function') {
+      if (officialVerCache) renderOfficialVersion(officialVerCache);
+      else if (typeof loadOfficialVersion === 'function') loadOfficialVersion();
+    }
   } catch (e) { toast('读取配置失败：' + e.message, 'err'); }
 }
 function collectConfig() {
@@ -1748,9 +1753,58 @@ function refreshVisible() {
   // 限流倒计时每秒 tick 只在账号池视图跑（其他视图没有这些节点，函数内部会自停）。
   tickRateLimits();
 }
+/* ── 官方版本检测（防风控指纹老化）──────────────────────────────── */
+let officialVerCache = null;
+async function loadOfficialVersion() {
+  try {
+    const r = await api('official_version');
+    officialVerCache = r;
+    renderOfficialVersion(r);
+  } catch (e) { /* 静默，不阻塞面板 */ }
+}
+
+function renderOfficialVersion(r) {
+  if (!r) return;
+  const top = $('topOfficialVer');
+  if (top) {
+    if (r.outdated) {
+      top.style.display = '';
+      top.className = 'tag warn';
+      top.textContent = '官方有更新 ' + (r.latest_cn || r.latest_global || '');
+      top.title = '官方客户端已发布新版：国内版 ' + (r.latest_cn || '—') + ' · 国际版 ' + (r.latest_global || '—') +
+        '（当前模拟 ' + r.current_client_version + '），点击查看配置';
+      top.onclick = () => { go('config'); };
+    } else {
+      top.style.display = '';
+      top.className = 'tag mute';
+      top.textContent = '指纹对齐 ' + r.current_client_version;
+      top.title = '出站指纹版本已对齐官方最新（国内版 ' + (r.latest_cn || '—') + ' · 国际版 ' + (r.latest_global || '—') + '）';
+      top.onclick = () => { go('config'); };
+    }
+  }
+  if ($('cfgVerHint')) {
+    const cn = r.latest_cn || '—', gl = r.latest_global || '—';
+    $('cfgVerHint').innerHTML = '官方最新：国内版 <b>' + esc(cn) + '</b> · 国际版 <b>' + esc(gl) +
+      '</b>（当前模拟 ' + esc(r.current_client_version) + '）';
+  }
+  if ($('btnSyncOfficialVer')) {
+    $('btnSyncOfficialVer').onclick = () => {
+      const v = r.latest_cn || r.latest_global || '';
+      if (v) {
+        const inp = document.querySelector('input[name="client_version"]');
+        if (inp) {
+          inp.value = v;
+          toast('已填入最新版本号 ' + v + '，点击下方保存即可', 'ok');
+        }
+      }
+    };
+  }
+}
+
 function start() {
   loadOverview(true);
   loadCompensation();                       // 补偿状态：首次进页面查一次（之后靠新鲜窗口）
+  loadOfficialVersion();                    // 官方版本检测（防指纹老化）
   if (refTimer) clearInterval(refTimer);
   refTimer = setInterval(refreshVisible, 5000);
   checkAuthGate();

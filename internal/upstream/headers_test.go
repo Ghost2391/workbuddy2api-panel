@@ -58,3 +58,24 @@ func TestChatHeadersPreservesConversationID(t *testing.T) {
 func testAuth() *auth.Auth {
 	return &auth.Auth{UID: "u1", AccessToken: "at"}
 }
+
+// TestChatHeadersDesktopInteractions 对齐官方 5.8.4/5.6.2 抓包指纹：
+// X-Agent-Intent="craft", X-Agent-Type="main", X-Private-Data="true" 必须在出站 chat 请求中常驻。
+func TestChatHeadersDesktopInteractions(t *testing.T) {
+	c := &Client{}
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v2/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ChatHeaders(req, testAuth(), "", ChatMeta{})
+
+	for header, want := range map[string]string{
+		"X-Agent-Intent": "craft",
+		"X-Agent-Type":   "main",
+		"X-Private-Data": "true",
+	} {
+		if got := req.Header.Get(header); got != want {
+			t.Errorf("header %s = %q, want %q", header, got, want)
+		}
+	}
+}

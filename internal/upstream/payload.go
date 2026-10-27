@@ -346,7 +346,10 @@ func dropReasoningContentParts(obj map[string]any) {
 // ensureConsoleSystem global realm 兜底 system 注入（吸收 PR #45，防 console 域上游 code 11-128）：
 // 首条消息非 system 时在 messages 最前补一条 fallback system（"You are a helpful assistant."）。
 // 仅对 global 请求调用（CN 现状不动；即使首条就是 system 也不重复注入）。
-// body 不可解析时原样返回（与 prepareBody 语义一致：坏 body 不在这里二次错误化）。
+//   - messages 缺失或不可解析：原样返回（不二次错误化）。
+//   - messages 为空数组：注入首条默认 system（防上游"first message is not system prompt"）。
+//   - 首条为 developer：改写角色为 system，若 content 为空补默认提示词。
+//   - 首条为 system 但 content 为空/nil：补默认提示词（防空 prompt 触发渠道风控）。
 func ensureConsoleSystem(body []byte) []byte {
 	if len(body) == 0 {
 		return body
@@ -356,13 +359,36 @@ func ensureConsoleSystem(body []byte) []byte {
 		return body
 	}
 	msgs, ok := obj["messages"].([]any)
-	if !ok || len(msgs) == 0 {
+	if !ok {
 		return body
+	}
+	if len(msgs) == 0 {
+		obj["messages"] = []any{map[string]any{"role": "system", "content": "You are a helpful assistant."}}
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return body
+		}
+		return out
 	}
 	first, ok := msgs[0].(map[string]any)
 	if ok {
-		if role, _ := first["role"].(string); strings.EqualFold(strings.TrimSpace(role), "system") {
-			return body // 首条已是 system：不注入
+		role, _ := first["role"].(string)
+		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "system" || role == "developer" {
+			if role == "developer" {
+				first["role"] = "system"
+			}
+			content, hasContent := first["content"]
+			if !hasContent || content == nil {
+				first["content"] = "You are a helpful assistant."
+			} else if str, isStr := content.(string); isStr && strings.TrimSpace(str) == "" {
+				first["content"] = "You are a helpful assistant."
+			}
+			out, err := json.Marshal(obj)
+			if err != nil {
+				return body
+			}
+			return out
 		}
 	}
 	obj["messages"] = append([]any{map[string]any{"role": "system", "content": "You are a helpful assistant."}}, msgs...)

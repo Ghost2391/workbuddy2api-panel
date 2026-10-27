@@ -326,24 +326,32 @@ func (c *Client) attributionClientName() string {
 	return "WorkBuddy"
 }
 
-// injectAttribution 注入用量归属头（X-Agent-Purpose / X-IDE-* / X-Product）。
+// injectAttribution 注入用量归属与官方桌面端特征头（X-Agent-Purpose / X-IDE-* / X-Product / X-Agent-Intent / X-Agent-Type / X-Private-Data）。
 // 仅在 chat/completions 路径生效（ChatHeaders 调用）。
 //
 // 默认（ClientName 空）即对齐官方 WorkBuddy 桌面端指纹：X-Agent-Purpose="conversation"
 // + X-IDE-Name/Type/Product="WorkBuddy" + X-IDE-Version=client_version，上游用量归因
 // 不再出现 client/agentPurpose 为空的「网关特征」。显式 ClientName="SaaS" 还原旧行为
 // （仅 X-Product="SaaS"，不设 X-IDE-*）；配其他值则四头跟随该值。
+//
+// 补齐官方桌面端交互与私密数据指纹（对齐 5.8.4/5.6.2 抓包事实）：
+//   - X-Agent-Intent: "craft"（官方桌面端默认会话意图）
+//   - X-Agent-Type: "main"（官方主会话 Agent 类型）
+//   - X-Private-Data: "true"（官方桌面端私密数据模式声明）
 func (c *Client) injectAttribution(req *http.Request) {
 	name := c.attributionClientName()
 	if name == "SaaS" {
 		req.Header.Set("X-Product", "SaaS")
-		return
+	} else {
+		req.Header.Set("X-Agent-Purpose", "conversation")
+		req.Header.Set("X-IDE-Name", name)
+		req.Header.Set("X-IDE-Type", name)
+		req.Header.Set("X-IDE-Version", c.clientVersion())
+		req.Header.Set("X-Product", name)
 	}
-	req.Header.Set("X-Agent-Purpose", "conversation")
-	req.Header.Set("X-IDE-Name", name)
-	req.Header.Set("X-IDE-Type", name)
-	req.Header.Set("X-IDE-Version", c.clientVersion())
-	req.Header.Set("X-Product", name)
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Agent-Type", "main")
+	req.Header.Set("X-Private-Data", "true")
 }
 
 // injectClientIP 在 PassthroughIP 开启时把 clientIP 参数透传给上游（三等价头）。

@@ -192,6 +192,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
+	p.mux.HandleFunc("GET /panel/api/official_version", p.withAuth(p.officialVersionHandler))
 	p.mux.HandleFunc("POST /panel/api/models/test", p.withAuth(p.modelTest))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
@@ -569,6 +570,16 @@ func (p *Panel) modelProbes(w http.ResponseWriter, r *http.Request) {
 		out["updated_at"] = fi.ModTime().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// officialVersionHandler 返回官方客户端最新分发版本与当前模拟版本对比。
+func (p *Panel) officialVersionHandler(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Upstream == nil {
+		writeErr(w, http.StatusServiceUnavailable, "upstream not configured")
+		return
+	}
+	report := p.cfg.Upstream.CheckOfficialVersions()
+	writeJSON(w, http.StatusOK, report)
 }
 
 // ---------------------------------------------------------------------------

@@ -655,6 +655,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
       <h2 id="ttl">账号池</h2>
       <span class="sep">/</span>
       <span class="meta" id="subMeta">-</span>
+      <span class="tag mute" id="topOfficialVer" style="display:none;cursor:pointer;margin-left:8px" title="点击查看版本配置"></span>
       <div class="grow"></div>
       <button class="icon ghost" id="btnTheme" title="切换明暗（跟随系统 → 浅色 → 深色）" aria-label="切换主题">
         <svg id="icoTheme" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></svg>
@@ -1124,8 +1125,20 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             <div class="hr"></div>
             <div class="grid2">
               <label class="fld"><span class="lb">出站 User-Agent</span>
-                <input name="user_agent" placeholder="留空 = CLI/2.63.2 CodeBuddy/2.63.2">
-                <span class="hint">影响官网积分记录「使用端」显示；需重启</span></label>
+                <input name="user_agent" placeholder="留空 = 走官方默认三段式">
+                <span class="hint">覆盖整个 UA；留空推荐，自动对齐官方桌面端格式；需重启</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">模拟客户端版本 (client_version)</span>
+                <div class="inline">
+                  <input name="client_version" id="cfgClientVersion" placeholder="5.5.4">
+                  <button type="button" class="xs" id="btnSyncOfficialVer" title="一键填入官方最新版本号">同步最新</button>
+                </div>
+                <span class="hint" id="cfgVerHint">留空 = 默认内置 5.5.4；官方最新：检测中...</span></label>
+              <label class="fld"><span class="lb">模拟 CLI 版本 (cli_version)</span>
+                <input name="cli_version" placeholder="2.137.1">
+                <span class="hint">出站 UA 的 CLI 段版本；留空 = 默认内置 2.137.1</span></label>
             </div>
             <div class="hr"></div>
             <div class="grid2">
