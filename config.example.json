@@ -51,6 +51,8 @@
     "idle_timeout_seconds": 300,
     "user_agent": "",
     "client_version": "",
+    "client_version_cn": "",
+    "client_version_global": "",
     "cli_version": "",
     "client_name": "",
     "device_token": "",

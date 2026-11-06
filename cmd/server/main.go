@@ -157,6 +157,8 @@ func main() {
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
 	up.UserAgent = cfg.Upstream.UserAgent
 	up.ClientVersion = cfg.Upstream.ClientVersion
+	up.ClientVersionCN = cfg.Upstream.ClientVersionCN
+	up.ClientVersionGlobal = cfg.Upstream.ClientVersionGlobal
 	up.CliVersion = cfg.Upstream.CliVersion
 	up.ClientName = cfg.Upstream.ClientName
 	up.DeviceToken = cfg.Upstream.DeviceToken
@@ -533,6 +535,9 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		HiddenModels:         livecfg.NormalizeHiddenModels(newCfg.Models.Hidden),
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
+	// 出站客户端版本热生效（统一 + 国内/国际双版本）：面板对齐官方最新版本后
+	// 无需重启即可让下一个请求用上新指纹。
+	up.SetClientVersions(newCfg.Upstream.ClientVersion, newCfg.Upstream.ClientVersionCN, newCfg.Upstream.ClientVersionGlobal)
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)

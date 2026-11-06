@@ -153,8 +153,14 @@ type Config struct {
 		// 默认值已对齐官方 WorkBuddy 桌面形态（三段式），用户仍可配完全自定义值改写。
 		UserAgent string `json:"user_agent"`
 		// ClientVersion WorkBuddy 客户端版本段（出站 UA 的 `WorkBuddy/<ver>` 与归属头
-		// X-IDE-Version）。空 = 内置默认（对齐官方 5.5.4 分发包）。
+		// X-IDE-Version）。统一版本：两域专属版本留空时的回落值。
+		// 空 = 内置默认（对齐官方 5.5.4 分发包）。
 		ClientVersion string `json:"client_version"`
+		// ClientVersionCN / ClientVersionGlobal 按账号域覆盖的客户端版本（双版本号）。
+		// 官方国内版与国际版发版节奏常有差异，允许各自对齐对应域的最新版本；
+		// 空 = 回落到统一 client_version（老配置两域行为不变）。
+		ClientVersionCN     string `json:"client_version_cn"`
+		ClientVersionGlobal string `json:"client_version_global"`
 		// CliVersion 出站 UA 中 `CLI/<ver>` 段的版本。空 = 内置默认（官方内置 CLI 2.137.1）。
 		CliVersion string `json:"cli_version"`
 		// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
@@ -451,6 +457,12 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_CLIENT_VERSION"); v != "" {
 		c.Upstream.ClientVersion = v
+	}
+	if v := os.Getenv("WB2A_CLIENT_VERSION_CN"); v != "" {
+		c.Upstream.ClientVersionCN = v
+	}
+	if v := os.Getenv("WB2A_CLIENT_VERSION_GLOBAL"); v != "" {
+		c.Upstream.ClientVersionGlobal = v
 	}
 	if v := os.Getenv("WB2A_CLI_VERSION"); v != "" {
 		c.Upstream.CliVersion = v

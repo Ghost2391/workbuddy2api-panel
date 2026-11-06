@@ -1130,15 +1130,31 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             </div>
             <div class="hr"></div>
             <div class="grid2">
-              <label class="fld"><span class="lb">模拟客户端版本 (client_version)</span>
-                <div class="inline">
-                  <input name="client_version" id="cfgClientVersion" placeholder="5.5.4">
-                  <button type="button" class="xs" id="btnSyncOfficialVer" title="一键填入官方最新版本号">同步最新</button>
-                </div>
-                <span class="hint" id="cfgVerHint">留空 = 默认内置 5.5.4；官方最新：检测中...</span></label>
+              <label class="fld"><span class="lb">模拟客户端版本 · 统一 (client_version)</span>
+                <input name="client_version" placeholder="5.5.4">
+                <span class="hint">两域未单独配置时的回落版本；留空 = 默认内置 5.5.4</span></label>
               <label class="fld"><span class="lb">模拟 CLI 版本 (cli_version)</span>
                 <input name="cli_version" placeholder="2.137.1">
                 <span class="hint">出站 UA 的 CLI 段版本；留空 = 默认内置 2.137.1</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">国内版客户端版本 (client_version_cn)</span>
+                <div class="inline">
+                  <input name="client_version_cn" id="cfgClientVersionCN" placeholder="留空 = 回落统一版本">
+                  <button type="button" class="xs" id="btnSyncOfficialVerCN" title="填入官方国内版最新版本号">同步最新</button>
+                </div>
+                <span class="hint" id="cfgVerHintCN">官方国内版最新：检测中...</span></label>
+              <label class="fld"><span class="lb">国际版客户端版本 (client_version_global)</span>
+                <div class="inline">
+                  <input name="client_version_global" id="cfgClientVersionGlobal" placeholder="留空 = 回落统一版本">
+                  <button type="button" class="xs" id="btnSyncOfficialVerGlobal" title="填入官方国际版最新版本号">同步最新</button>
+                </div>
+                <span class="hint" id="cfgVerHintGlobal">官方国际版最新：检测中...</span></label>
+            </div>
+            <div class="hr"></div>
+            <div>
+              <span class="hint" id="cfgVerHint">官方国内版与国际版发版节奏可能不同，可分别对齐；两域留空则统一用上方 client_version。保存后热生效，无需重启。</span>
             </div>
             <div class="hr"></div>
             <div class="grid2">

@@ -793,6 +793,35 @@ func TestUpstreamUserAgentConfig(t *testing.T) {
 	}
 }
 
+// TestUpstreamDualClientVersionConfig 双版本号字段从 config.json 与 env 均生效；
+// 缺省空串保持回落语义（headers 层 clientVersionForRealm 据此回落统一/内置默认）。
+func TestUpstreamDualClientVersionConfig(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	os.WriteFile(fp, []byte(`{"upstream":{"client_version":"5.9.3","client_version_cn":"5.9.3","client_version_global":"5.9.4"}}`), 0o600)
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Upstream.ClientVersion != "5.9.3" || c.Upstream.ClientVersionCN != "5.9.3" || c.Upstream.ClientVersionGlobal != "5.9.4" {
+		t.Errorf("versions = %q/%q/%q", c.Upstream.ClientVersion, c.Upstream.ClientVersionCN, c.Upstream.ClientVersionGlobal)
+	}
+	// 缺省为空
+	if c2, err := Load(""); err != nil || c2.Upstream.ClientVersionCN != "" || c2.Upstream.ClientVersionGlobal != "" {
+		t.Errorf("default dual versions should be empty (err=%v)", err)
+	}
+	// env 覆盖
+	t.Setenv("WB2A_CLIENT_VERSION_CN", "6.0.1")
+	t.Setenv("WB2A_CLIENT_VERSION_GLOBAL", "6.0.2")
+	c3, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c3.Upstream.ClientVersionCN != "6.0.1" || c3.Upstream.ClientVersionGlobal != "6.0.2" {
+		t.Errorf("env versions = %q/%q", c3.Upstream.ClientVersionCN, c3.Upstream.ClientVersionGlobal)
+	}
+}
+
 // TestLoadConfigPathIsDirectory config 路径是目录时给出可操作提示（Docker bind mount 陷阱）。
 // 复现：compose 挂载 ./config.json 但宿主机缺该文件 → Docker 创建同名目录 → 启动失败。
 // 旧行为只报 "read config: ... Incorrect function" 之类晦涩错误，无从排查。

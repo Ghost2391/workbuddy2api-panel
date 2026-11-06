@@ -30,14 +30,22 @@ type OfficialUpdateInfo struct {
 }
 
 // OfficialVersionReport 官方版本探测报告。
+//
+// 双版本号语义：官方国内版与国际版发版节奏不同，网关支持按域分别模拟版本
+// （client_version_cn / client_version_global）。报告据此分别给出两域的生效版本
+// 与「是否落后」判定；CurrentClientVersion / Outdated 保留为兼容字段（统一口径）。
 type OfficialVersionReport struct {
-	CN                   *OfficialUpdateInfo `json:"cn,omitempty"`
-	Global               *OfficialUpdateInfo `json:"global,omitempty"`
-	CurrentClientVersion string              `json:"current_client_version"`
-	Outdated             bool                `json:"outdated"`
-	LatestCN             string              `json:"latest_cn"`
-	LatestGlobal         string              `json:"latest_global"`
-	LastChecked          time.Time           `json:"last_checked"`
+	CN                      *OfficialUpdateInfo `json:"cn,omitempty"`
+	Global                  *OfficialUpdateInfo `json:"global,omitempty"`
+	CurrentClientVersion    string              `json:"current_client_version"`
+	CurrentClientVersionCN  string              `json:"current_client_version_cn"`
+	CurrentClientVersionGlb string              `json:"current_client_version_global"`
+	Outdated                bool                `json:"outdated"`
+	OutdatedCN              bool                `json:"outdated_cn"`
+	OutdatedGlobal          bool                `json:"outdated_global"`
+	LatestCN                string              `json:"latest_cn"`
+	LatestGlobal            string              `json:"latest_global"`
+	LastChecked             time.Time           `json:"last_checked"`
 }
 
 type officialVersionCache struct {
@@ -59,13 +67,20 @@ func (c *Client) CheckOfficialVersions() OfficialVersionReport {
 	defer officialCache.Unlock()
 
 	curVer := c.clientVersion()
-	if time.Since(officialCache.fetched) < officialVersionTTL && officialCache.report.CurrentClientVersion == curVer {
+	curVerCN := c.clientVersionForRealm("cn")
+	curVerGlb := c.clientVersionForRealm("global")
+	if time.Since(officialCache.fetched) < officialVersionTTL &&
+		officialCache.report.CurrentClientVersion == curVer &&
+		officialCache.report.CurrentClientVersionCN == curVerCN &&
+		officialCache.report.CurrentClientVersionGlb == curVerGlb {
 		return officialCache.report
 	}
 
 	report := OfficialVersionReport{
-		CurrentClientVersion: curVer,
-		LastChecked:          time.Now(),
+		CurrentClientVersion:    curVer,
+		CurrentClientVersionCN:  curVerCN,
+		CurrentClientVersionGlb: curVerGlb,
+		LastChecked:             time.Now(),
 	}
 
 	httpc := c.HTTP
@@ -87,11 +102,15 @@ func (c *Client) CheckOfficialVersions() OfficialVersionReport {
 		report.LatestGlobal = baseSemver(info.Version)
 	}
 
-	// 比较当前版本是否落后于任一官方版本
-	if (report.LatestCN != "" && isSemverOutdated(curVer, report.LatestCN)) ||
-		(report.LatestGlobal != "" && isSemverOutdated(curVer, report.LatestGlobal)) {
-		report.Outdated = true
+	// 按域分别比较：国内用 curVerCN 对国内最新，国际用 curVerGlb 对国际最新。
+	// 兼容字段 Outdated = 两域有任一落后（旧前端据此弹「官方有更新」徽章）。
+	if report.LatestCN != "" && isSemverOutdated(curVerCN, report.LatestCN) {
+		report.OutdatedCN = true
 	}
+	if report.LatestGlobal != "" && isSemverOutdated(curVerGlb, report.LatestGlobal) {
+		report.OutdatedGlobal = true
+	}
+	report.Outdated = report.OutdatedCN || report.OutdatedGlobal
 
 	officialCache.report = report
 	officialCache.fetched = time.Now()

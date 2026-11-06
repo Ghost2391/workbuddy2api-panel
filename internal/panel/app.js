@@ -1341,6 +1341,7 @@ const CFG_MAP = {
   timeout_seconds: ['upstream', 'timeout_seconds'], header_timeout_seconds: ['upstream', 'header_timeout_seconds'],
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
   client_version: ['upstream', 'client_version'], cli_version: ['upstream', 'cli_version'],
+  client_version_cn: ['upstream', 'client_version_cn'], client_version_global: ['upstream', 'client_version_global'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
@@ -1357,7 +1358,7 @@ const CFG_MAP = {
  * 刻意不含 api_key：清空它 = 关闭整个鉴权，误触代价是网关变成无鉴权公开服务。
  * 该字段（以及提示文案"留空 = 不鉴权"与现状不符的问题）单独处理。
  */
-const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file', 'client_version', 'cli_version']);
+const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file', 'client_version', 'cli_version', 'client_version_cn', 'client_version_global']);
 
 function dig(obj, path) { return path.reduce((o, k) => (o == null ? undefined : o[k]), obj); }
 function put(obj, path, val) {
@@ -1765,40 +1766,52 @@ async function loadOfficialVersion() {
 
 function renderOfficialVersion(r) {
   if (!r) return;
+  const cnLatest = r.latest_cn || '—', glLatest = r.latest_global || '—';
+  const cnCur = r.current_client_version_cn || r.current_client_version || '—';
+  const glCur = r.current_client_version_global || r.current_client_version || '—';
+  const cnOld = r.outdated_cn, glOld = r.outdated_global;
   const top = $('topOfficialVer');
   if (top) {
     if (r.outdated) {
       top.style.display = '';
       top.className = 'tag warn';
-      top.textContent = '官方有更新 ' + (r.latest_cn || r.latest_global || '');
-      top.title = '官方客户端已发布新版：国内版 ' + (r.latest_cn || '—') + ' · 国际版 ' + (r.latest_global || '—') +
-        '（当前模拟 ' + r.current_client_version + '），点击查看配置';
+      const parts = [];
+      if (cnOld) parts.push('国内 ' + cnLatest);
+      if (glOld) parts.push('国际 ' + glLatest);
+      top.textContent = '官方有更新 ' + (parts.join(' / ') || (cnLatest + ' / ' + glLatest));
+      top.title = '官方国内版 ' + cnLatest + '（当前 ' + cnCur + '）· 国际版 ' + glLatest +
+        '（当前 ' + glCur + '），点击查看配置';
       top.onclick = () => { go('config'); };
     } else {
       top.style.display = '';
       top.className = 'tag mute';
-      top.textContent = '指纹对齐 ' + r.current_client_version;
-      top.title = '出站指纹版本已对齐官方最新（国内版 ' + (r.latest_cn || '—') + ' · 国际版 ' + (r.latest_global || '—') + '）';
+      top.textContent = '指纹对齐 CN ' + cnCur + ' / GL ' + glCur;
+      top.title = '出站指纹已对齐官方最新（国内版 ' + cnLatest + ' · 国际版 ' + glLatest + '）';
       top.onclick = () => { go('config'); };
     }
   }
-  if ($('cfgVerHint')) {
-    const cn = r.latest_cn || '—', gl = r.latest_global || '—';
-    $('cfgVerHint').innerHTML = '官方最新：国内版 <b>' + esc(cn) + '</b> · 国际版 <b>' + esc(gl) +
-      '</b>（当前模拟 ' + esc(r.current_client_version) + '）';
+  if ($('cfgVerHintCN')) {
+    $('cfgVerHintCN').innerHTML = '官方国内版最新 <b>' + esc(cnLatest) + '</b> · 当前 <b>' + esc(cnCur) +
+      '</b>' + (cnOld ? ' <span style="color:#e6a23c">（过旧）</span>' : ' <span style="color:#67c23a">（已对齐）</span>');
   }
-  if ($('btnSyncOfficialVer')) {
-    $('btnSyncOfficialVer').onclick = () => {
-      const v = r.latest_cn || r.latest_global || '';
-      if (v) {
-        const inp = document.querySelector('input[name="client_version"]');
-        if (inp) {
-          inp.value = v;
-          toast('已填入最新版本号 ' + v + '，点击下方保存即可', 'ok');
-        }
+  if ($('cfgVerHintGlobal')) {
+    $('cfgVerHintGlobal').innerHTML = '官方国际版最新 <b>' + esc(glLatest) + '</b> · 当前 <b>' + esc(glCur) +
+      '</b>' + (glOld ? ' <span style="color:#e6a23c">（过旧）</span>' : ' <span style="color:#67c23a">（已对齐）</span>');
+  }
+  const bindSync = (btnId, inputName, latest, label) => {
+    const btn = $(btnId);
+    if (!btn) return;
+    btn.onclick = () => {
+      if (!latest || latest === '—') { toast(label + '版本暂不可用', 'err'); return; }
+      const inp = document.querySelector('input[name="' + inputName + '"]');
+      if (inp) {
+        inp.value = latest;
+        toast('已填入官方' + label + '最新 ' + latest + '，点击下方保存即可（热生效）', 'ok');
       }
     };
-  }
+  };
+  bindSync('btnSyncOfficialVerCN', 'client_version_cn', r.latest_cn, '国内版');
+  bindSync('btnSyncOfficialVerGlobal', 'client_version_global', r.latest_global, '国际版');
 }
 
 function start() {

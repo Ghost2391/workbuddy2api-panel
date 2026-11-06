@@ -742,8 +742,16 @@ type Client struct {
 	UserAgent string
 
 	// ClientVersion WorkBuddy 客户端版本段（出站 UA 的 `WorkBuddy/<ver>` + X-IDE-Version）。
-	// 空 = 内置默认（对齐官方 5.5.4 分发包）。
+	// 统一版本：两域专属版本留空时的回落值。空 = 内置默认（对齐官方 5.5.4 分发包）。
 	ClientVersion string
+
+	// ClientVersionCN / ClientVersionGlobal 按账号域覆盖的客户端版本（双版本号）。
+	// 官方国内版与国际版发版节奏常有差异，允许各自对齐到对应域的最新版本。
+	// 空 = 回落到 ClientVersion（统一版本）或内置默认。优先级见 clientVersionForRealm。
+	// 这三个版本字段可在面板热改（SetClientVersions），并发读经 versionMu 保护。
+	ClientVersionCN     string
+	ClientVersionGlobal string
+	versionMu           sync.RWMutex
 
 	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（官方内置 CLI 2.137.1）。
 	CliVersion string
