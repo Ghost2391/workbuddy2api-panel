@@ -170,6 +170,7 @@ func main() {
 	up.GlobalEnabled = cfg.Global.Enabled
 	up.ChatBaseGlobal = cfg.Global.ChatBase
 	up.BillingBaseGlobal = cfg.Global.BillingBase
+	up.GlobalCheckinModel = cfg.Global.CheckinModel
 	applyCNChatBase(up, cfg)
 	auth.SetGlobalEnabled(cfg.Global.Enabled)
 	// DNS：Android 没有 /etc/resolv.conf，Go 的纯 Go 解析器会退回 127.0.0.1/::1，
@@ -539,6 +540,8 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	// 出站客户端版本热生效（统一 + 国内/国际双版本）：面板对齐官方最新版本后
 	// 无需重启即可让下一个请求用上新指纹。
 	up.SetClientVersions(newCfg.Upstream.ClientVersion, newCfg.Upstream.ClientVersionCN, newCfg.Upstream.ClientVersionGlobal)
+	// 国际版手动签到模型热生效（只影响下一次手动签到，不改变排程）。
+	up.GlobalCheckinModel = newCfg.Global.CheckinModel
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)

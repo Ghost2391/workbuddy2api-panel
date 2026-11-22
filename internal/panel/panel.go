@@ -12,6 +12,7 @@ package panel
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -818,10 +819,35 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	checkinMsg := ""
 	checkinDone := false
-	// 企业版无签到体系（上游 400 code 10001「企业账号不支持该操作」）：不发起该调用，
-	// 端点退化为「刷新额度」——企业额度走 get-enterprise-user-usage 口径（见 upstream）。
-	// 前端对企业号不渲染「签到」按钮；此处是 API 侧防御（外部脚本/旧缓存前端仍可能调用）。
-	if a.IsEnterprise() {
+	if a.IsGlobal() {
+		// 国际版无 CN 签到端点：手动签到 = 用配置的免费 hy 模型完成一次真实对话，
+		// 并上报同一新会话的 chat_request_send；积分次日到账。仅手动触发，不进定时任务。
+		if a.IsEnterpriseSession() {
+			// 企业切换会话的行为事件会被上游静默丢弃，做真实对话也是零收益。
+			checkinMsg = "企业账号无签到体系（已跳过签到，仅刷新额度）"
+		} else if st, ok := p.cfg.Pool.Status(uid); ok && st.CheckinDone {
+			checkinMsg = "今日国际版签到已完成"
+			checkinDone = true
+		} else if !p.tryLockAccount(uid) {
+			writeErr(w, http.StatusConflict, "该账号有操作正在执行中，请稍后重试")
+			return
+		} else {
+			defer p.unlockAccount(uid)
+			if _, err := p.cfg.Upstream.GlobalCheckinChat(a); err != nil {
+				checkinMsg = "国际版签到失败: " + err.Error()
+			} else {
+				p.cfg.Pool.NoteCheckinDone(uid)
+				checkinDone = true
+				checkinMsg = fmt.Sprintf(
+					"国际版签到完成（%s 新会话真实对话），积分次日到账",
+					p.cfg.Upstream.GlobalCheckinModelName(),
+				)
+			}
+		}
+	} else if a.IsEnterprise() {
+		// 企业版无签到体系（上游 400 code 10001「企业账号不支持该操作」）：不发起该调用，
+		// 端点退化为「刷新额度」——企业额度走 get-enterprise-user-usage 口径（见 upstream）。
+		// 前端对企业号不渲染「签到」按钮；此处是 API 侧防御（外部脚本/旧缓存前端仍可能调用）。
 		checkinMsg = "企业账号无签到体系（已跳过签到，仅刷新额度）"
 	} else if err := p.cfg.Upstream.DailyCheckin(a); err != nil {
 		checkinMsg = err.Error() // "今天已签到"等业务错误照常查余额
@@ -919,9 +945,34 @@ func (p *Panel) checkinAll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "scheduler not available")
 		return
 	}
-	go p.cfg.Scheduler.RunCheckinNow()
-	log.Printf("panel: 手动全量签到已触发（含猫猫旅行）")
+	go func() {
+		p.cfg.Scheduler.RunCheckinNow()
+		p.runGlobalCheckinManual()
+	}()
+	log.Printf("panel: 手动全量签到已触发（CN 签到 + 国际版真实对话）")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+}
+
+// runGlobalCheckinManual 手动全量签到里的国际版分支：逐个 global 账号用真实对话签到。
+// 国际版不排程签到（scheduler.RunCheckinNow 仍跳过 global），本方法只由手动入口调用。
+func (p *Panel) runGlobalCheckinManual() {
+	for _, st := range p.cfg.Pool.List() {
+		if st.Disabled || st.CheckinDone {
+			continue
+		}
+		a := p.cfg.Pool.AuthByUID(st.UID)
+		if a == nil || !a.IsGlobal() || a.IsEnterpriseSession() {
+			continue
+		}
+		cid, err := p.cfg.Upstream.GlobalCheckinChat(a)
+		if err != nil {
+			log.Printf("checkin global %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+			continue
+		}
+		p.cfg.Pool.NoteCheckinDone(st.UID)
+		log.Printf("checkin global %s: 完成（cid=%s model=%s）",
+			logfmt.Label(st.UID, st.Nickname), cid, p.cfg.Upstream.GlobalCheckinModelName())
+	}
 }
 
 // travelAll 手动触发全量猫猫旅行巡检（异步执行）。

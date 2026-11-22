@@ -409,6 +409,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `upstash.url` / `upstash.token` | 空 | 空 = 纯内存模式（Noop 降级，功能照常） |
 | `pool.max_in_flight` | `3` | 单账号最大在途请求数（`0` = 不限） |
 | `pool.max_in_flight_global` | `2` | global 域单账号在途上限（国际版 WAF 风控更紧，压低并发） |
+| `global.checkin_model` | `global:hy3` | 国际版**手动**签到模型：面板「签到」/「全量签到」或 `cmd/signin -model` 会用该模型发起一次**新会话真实对话**并上报 `chat_request_send`（国际版没有 CN 的 `daily-checkin`），积分次日到账。仅手动触发，**不进定时任务**；`global:` / `cn:` 前缀在出站前剥离。面板保存后热生效 |
 | `pool.degrade_threshold` | `5` | 连败降权阈值：未知错误（ErrClient/传输层）连败 N 次临时出池 |
 | `pool.degrade_cooldown` / `pool.degrade_cooldown_max` | `10m` / `2h` | 连败降权时长与上限钳制 |
 | `pool.cost_explore_interval` | `30m` | costTier 条件探索窗口：免费层垄断且存在未知号时，每窗口把一个真实请求搭车改道给未知号（零新增上游请求；成功即毕业，失败走既有错误策略）。`0` = 关停 |

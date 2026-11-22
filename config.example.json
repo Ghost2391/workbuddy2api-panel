@@ -40,7 +40,8 @@
   "global": {
     "enabled": true,
     "chat_base": "",
-    "billing_base": ""
+    "billing_base": "",
+    "checkin_model": "global:hy3"
   },
   "cn": {
     "chat_base": ""

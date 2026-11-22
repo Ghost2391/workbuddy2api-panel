@@ -14,6 +14,7 @@ import (
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 // Config 顶层配置。
@@ -130,6 +131,10 @@ type Config struct {
 		// https://www.workbuddy.ai（internal/upstream.defaultGlobalBase）。
 		ChatBase    string `json:"chat_base"`
 		BillingBase string `json:"billing_base"`
+		// CheckinModel 国际版手动签到使用的模型：真实对话 + chat_request_send 上报。
+		// 空 = 默认免费的 global:hy3（internal/upstream.DefaultGlobalCheckinModel）。
+		// 该动作只手动触发（面板签到/全量签到、cmd/signin），不进定时任务。
+		CheckinModel string `json:"checkin_model"`
 	} `json:"global"`
 
 	CN struct {
@@ -320,6 +325,7 @@ func Default() *Config {
 	// Global.Enabled 缺省 true（纯 CN 行为不变：CN 账号恒判 cn，global base 不被使用）；
 	// ChatBase/BillingBase 缺省空（回落内置默认）。
 	c.Global.Enabled = true
+	c.Global.CheckinModel = upstream.DefaultGlobalCheckinModel
 	c.Features.SanitizeBlacklistFingerprints = true
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
 	c.Pool.Strategy = pool.RegionStrategies{Domestic: pool.WeightedRandom, International: pool.WeightedRandom}
@@ -525,6 +531,12 @@ func (c *Config) normalize() error {
 	}
 	if c.Logging.RequestArchiveMaxMB <= 0 {
 		c.Logging.RequestArchiveMaxMB = 100
+	}
+	// 国际版手动签到模型：空值回落默认 global:hy3；保留 global:/cn: 前缀，
+	// 出站时由 upstream.GlobalCheckinChat 剥掉。
+	c.Global.CheckinModel = strings.TrimSpace(c.Global.CheckinModel)
+	if c.Global.CheckinModel == "" {
+		c.Global.CheckinModel = upstream.DefaultGlobalCheckinModel
 	}
 	// 入站读取上限（issue #100）：空值回落默认 300s；"0" 合法（不限制）；
 	// 负值无语义，fail fast（静默钳 0 会把保护悄悄关掉）。

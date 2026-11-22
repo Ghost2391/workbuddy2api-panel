@@ -789,6 +789,10 @@ type Client struct {
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
 	GlobalEnabled bool
 
+	// GlobalCheckinModel 国际版手动签到使用的模型（真实对话 + 上报）。
+	// 空 = DefaultGlobalCheckinModel（默认免费的 global:hy3）；由 config global.checkin_model 注入。
+	GlobalCheckinModel string
+
 	// refreshMu/refreshInFlight 同账号 refresh 单飞（按 UID 分桶）：同一时刻只允许
 	// 一个 refresh 在途，其余调用等待并复用首个结果。上游对 refreshToken 反重放，
 	// 并发第二发会带着已被消费的 RT 撞 12153 并整链作废（issue #215：账号从此恒

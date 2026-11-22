@@ -1,8 +1,10 @@
 // signin 一次性批量签到工具：遍历 ./auths/workbuddy-*.json 全部账号，
-// 自动 RefreshToken（过期时），逐个调 daily-checkin，顺手查余额。
+// 自动 RefreshToken（过期时）；CN 调 daily-checkin，global 用 -model 指定
+// （默认 global:hy3）做一次真实对话（国际版无 daily-checkin），顺手查余额。
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -25,9 +27,11 @@ type row struct {
 }
 
 func main() {
+	model := flag.String("model", "", "global check-in model (default global:hy3)")
+	flag.Parse()
 	dir := "auths"
-	if len(os.Args) > 1 {
-		dir = os.Args[1]
+	if flag.NArg() > 0 {
+		dir = flag.Arg(0)
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "workbuddy-*.json"))
 	if err != nil || len(files) == 0 {
@@ -36,6 +40,7 @@ func main() {
 	}
 	sort.Strings(files)
 	up := upstream.New()
+	up.GlobalCheckinModel = *model
 
 	var rows []row
 	okN, alreadyN, failN := 0, 0, 0
@@ -77,20 +82,26 @@ func main() {
 			}
 		}
 
-		err = up.DailyCheckin(a)
+		var checkErr error
+		if a.IsGlobal() {
+			// 国际版无 daily-checkin：用真实对话（默认 global:hy3）签到。
+			_, checkErr = up.GlobalCheckinChat(a)
+		} else {
+			checkErr = up.DailyCheckin(a)
+		}
 		switch {
-		case err == nil:
+		case checkErr == nil:
 			r.status = "OK"
 			okN++
 		default:
-			// DailyCheckin 已签到返回 code!=0 错误
-			if isAlready(err.Error()) {
+			// 仅 CN 的 daily-checkin 有「已签到」幂等错误；global 真实对话失败一律 FAIL。
+			if !a.IsGlobal() && isAlready(checkErr.Error()) {
 				r.status = "ALREADY"
-				r.detail = short(err.Error())
+				r.detail = short(checkErr.Error())
 				alreadyN++
 			} else {
 				r.status = "FAIL"
-				r.detail = short(err.Error())
+				r.detail = short(checkErr.Error())
 				failN++
 			}
 		}
