@@ -4,4 +4,6 @@ interface EngineClient {
     fun listAccounts(): List<Account>
     fun importAccount(content: String): Account
     fun checkin(uid: String): CheckinResult
+    fun getCheckinModel(): String
+    fun setCheckinModel(model: String)
 }

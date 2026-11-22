@@ -37,10 +37,18 @@ class CheckinViewModelTest {
             return acc
         }
 
+        private var modelValue: String = "global:hy3"
+
         override fun checkin(uid: String): CheckinResult {
             checked += uid
             if (uid == throwFor) error("boom")
             return CheckinResult(uid = uid, status = "ok", message = "签到成功")
+        }
+
+        override fun getCheckinModel(): String = modelValue
+
+        override fun setCheckinModel(model: String) {
+            modelValue = model
         }
     }
 
@@ -93,6 +101,17 @@ class CheckinViewModelTest {
         assertEquals(listOf("u1", "u2"), engine.checked)
         assertEquals(2, vm.state.value.progressTotal)
         assertTrue(!vm.state.value.busy)
+    }
+
+    @Test
+    fun `loads and saves global checkin model`() {
+        val engine = FakeEngine()
+        val vm = viewModel(engine)
+        assertEquals("global:hy3", vm.state.value.checkinModel)
+
+        vm.setCheckinModel("global:hy4-preview-f")
+        assertEquals("global:hy4-preview-f", vm.state.value.checkinModel)
+        assertEquals("global:hy4-preview-f", engine.getCheckinModel())
     }
 
     @Test

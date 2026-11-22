@@ -19,10 +19,12 @@ import (
 )
 
 const (
-	requestTimeout = 35 * time.Second
-	dnsPrimary     = "223.5.5.5"
-	dnsSecondary   = "119.29.29.29"
-	refreshWindow  = 2 * time.Hour
+	requestTimeout   = 35 * time.Second
+	dnsPrimary       = "223.5.5.5"
+	dnsSecondary     = "119.29.29.29"
+	refreshWindow    = 2 * time.Hour
+	checkinModelFile = "checkin_model.txt"
+	checkinDoneFile  = "checkin_done.json"
 )
 
 // Engine 持有账号目录与上游客户端；每个方法都可从任意线程调用，
@@ -43,7 +45,12 @@ func NewEngine(dir string) *Engine {
 	up := upstream.New()
 	up.HTTP.Timeout = requestTimeout
 	up.SetDNSDialer(upstream.NewDNSDialer([]string{dnsPrimary, dnsSecondary}))
-	return &Engine{dir: dir, up: up}
+	up.GlobalCheckinModel = upstream.DefaultGlobalCheckinModel
+	e := &Engine{dir: dir, up: up}
+	if saved := e.loadCheckinModel(); saved != "" {
+		up.GlobalCheckinModel = saved
+	}
+	return e
 }
 
 // newEngineWith 仅供测试注入替换后的上游客户端。
@@ -165,10 +172,27 @@ func (e *Engine) Checkin(uid string) (string, error) {
 		CheckedAt: time.Now().Format(time.RFC3339),
 	}
 	switch {
-	case a.IsEnterprise():
+	case a.IsEnterprise() || a.IsEnterpriseSession():
 		r.Status, r.Message = "skipped", "企业账号无签到体系（已跳过）"
 	case a.IsGlobal():
-		r.Status, r.Message = "skipped", "国际版账号无签到体系（已跳过）"
+		// 国际版无 CN daily-checkin：手动签到 = 用配置的模型做一次新会话真实对话 + 上报。
+		if e.isCheckinDoneToday(a.UID) {
+			r.Status, r.Message = "already", "今日国际版签到已完成"
+			break
+		}
+		if st, msg, done := e.refreshIfNeeded(a); done {
+			r.Status, r.Message = st, msg
+			break
+		}
+		if _, err := e.up.GlobalCheckinChat(a); err != nil {
+			r.Status, r.Message = "failed", checkinErrorMessage(err)
+			break
+		}
+		e.markCheckinDone(a.UID)
+		r.Status, r.Message = "ok", fmt.Sprintf(
+			"国际版签到完成（%s 新会话真实对话），积分次日到账",
+			e.up.GlobalCheckinModelName(),
+		)
 	default:
 		if st, msg, done := e.refreshIfNeeded(a); done {
 			r.Status, r.Message = st, msg
@@ -221,6 +245,71 @@ func (e *Engine) load(uid string) (*auth.Auth, error) {
 		}
 	}
 	return nil, fmt.Errorf("account not found: %s", uid)
+}
+
+func (e *Engine) checkinModelPath() string { return filepath.Join(e.dir, checkinModelFile) }
+
+func (e *Engine) loadCheckinModel() string {
+	raw, err := os.ReadFile(e.checkinModelPath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// GetCheckinModel 返回当前国际版签到模型（无设置时为默认 global:hy3）。
+func (e *Engine) GetCheckinModel() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.up.GlobalCheckinModelName()
+}
+
+// SetCheckinModel 设置并持久化国际版签到模型；空值恢复默认。
+func (e *Engine) SetCheckinModel(model string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := strings.TrimSpace(model)
+	if m == "" {
+		m = upstream.DefaultGlobalCheckinModel
+	}
+	if err := os.MkdirAll(e.dir, 0o700); err != nil {
+		return fmt.Errorf("创建账号目录失败: %w", err)
+	}
+	if err := os.WriteFile(e.checkinModelPath(), []byte(m), 0o600); err != nil {
+		return fmt.Errorf("保存签到模型失败: %w", err)
+	}
+	e.up.GlobalCheckinModel = m
+	return nil
+}
+
+// checkinDonePath 保存每个账号的「今日已签到」日期（本地幂等，避免重复真实对话）。
+func (e *Engine) checkinDonePath() string { return filepath.Join(e.dir, checkinDoneFile) }
+
+func (e *Engine) isCheckinDoneToday(uid string) bool {
+	var days map[string]string
+	raw, err := os.ReadFile(e.checkinDonePath())
+	if err != nil {
+		return false
+	}
+	if json.Unmarshal(raw, &days) != nil {
+		return false
+	}
+	return days[uid] == time.Now().Format("2006-01-02")
+}
+
+func (e *Engine) markCheckinDone(uid string) {
+	var days map[string]string
+	raw, err := os.ReadFile(e.checkinDonePath())
+	if err == nil {
+		_ = json.Unmarshal(raw, &days)
+	}
+	if days == nil {
+		days = make(map[string]string)
+	}
+	days[uid] = time.Now().Format("2006-01-02")
+	if raw, err := json.Marshal(days); err == nil {
+		_ = os.WriteFile(e.checkinDonePath(), raw, 0o600)
+	}
 }
 
 // short 把上游错误压成一行，按 rune 截断避免切坏中文；含省略号不超过 160 字符。

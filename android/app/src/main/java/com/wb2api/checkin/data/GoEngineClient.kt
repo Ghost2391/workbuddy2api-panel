@@ -18,4 +18,10 @@ class GoEngineClient(authDir: File) : EngineClient {
 
     override fun checkin(uid: String): CheckinResult =
         json.decodeFromString(engine.checkin(uid))
+
+    override fun getCheckinModel(): String = engine.getCheckinModel()
+
+    override fun setCheckinModel(model: String) {
+        engine.setCheckinModel(model)
+    }
 }

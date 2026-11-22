@@ -22,6 +22,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -30,7 +31,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,10 +51,12 @@ fun AppScreen(
     onImport: () -> Unit,
     onCheckin: (String) -> Unit,
     onCheckinAll: () -> Unit,
+    onCheckinModelChange: (String) -> Unit,
     onDismissImport: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     val snackbar = remember { SnackbarHostState() }
+    var modelDraft by remember(state.checkinModel) { mutableStateOf(state.checkinModel) }
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbar.showSnackbar(it)
@@ -75,6 +81,25 @@ fun AppScreen(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
         ) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = modelDraft,
+                onValueChange = { modelDraft = it },
+                label = { Text("国际版签到模型") },
+                placeholder = { Text("global:hy3") },
+                singleLine = true,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "国际版每次签到会用该模型发起一次新会话真实对话；仅手动触发，积分次日到账。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = { onCheckinModelChange(modelDraft) },
+                enabled = !state.busy && modelDraft.trim() != state.checkinModel,
+            ) { Text("保存模型") }
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = onCheckinAll,

@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onCheckin = viewModel::checkin,
                     onCheckinAll = viewModel::checkinAll,
+                    onCheckinModelChange = viewModel::setCheckinModel,
                     onDismissImport = viewModel::clearImportSummary,
                     onDismissError = viewModel::clearError,
                 )

@@ -129,9 +129,12 @@ type fakeUpstream struct {
 	srv         *httptest.Server
 	checkinHits atomic.Int32
 	refreshHits atomic.Int32
+	chatHits    atomic.Int32
+	reportHits  atomic.Int32
 	checkinBody string
 	refreshCode int
 	refreshBody string
+	chatModel   string
 
 	authMu   sync.Mutex
 	lastAuth string
@@ -167,6 +170,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 	f := &fakeUpstream{
 		checkinBody: `{"code":0,"msg":"ok","data":{}}`,
 		refreshCode: http.StatusOK,
+		chatModel:   "hy3",
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/billing/meter/daily-checkin", func(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +194,22 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		}
 		_, _ = io.WriteString(w, f.refreshBody)
 	})
+	mux.HandleFunc("/v2/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		f.chatHits.Add(1)
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Model != f.chatModel {
+			t.Errorf("chat model=%q want %q", body.Model, f.chatModel)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\ndata: [DONE]\n\n")
+	})
+	mux.HandleFunc("/v2/report", func(w http.ResponseWriter, r *http.Request) {
+		f.reportHits.Add(1)
+		_, _ = io.WriteString(w, `{"code":0,"data":{}}`)
+	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -200,6 +220,10 @@ func (f *fakeUpstream) engine(dir string) *Engine {
 	up.HTTP = f.srv.Client()
 	up.ChatBaseCN = f.srv.URL
 	up.BillingBaseCN = f.srv.URL
+	up.ChatBaseGlobal = f.srv.URL
+	up.BillingBaseGlobal = f.srv.URL
+	up.GlobalEnabled = true
+	up.GlobalCheckinModel = upstream.DefaultGlobalCheckinModel
 	return newEngineWith(dir, up)
 }
 
@@ -319,22 +343,78 @@ func TestCheckinSkipsEnterpriseAndGlobal(t *testing.T) {
 		t.Fatalf("import global: %v", err)
 	}
 
-	want := map[string]string{
-		"ent": "企业账号无签到体系（已跳过）",
-		"glb": "国际版账号无签到体系（已跳过）",
+	raw, err := e.Checkin("ent")
+	if err != nil {
+		t.Fatalf("checkin ent: %v", err)
 	}
-	for _, uid := range []string{"ent", "glb"} {
-		raw, err := e.Checkin(uid)
-		if err != nil {
-			t.Fatalf("checkin %s: %v", uid, err)
-		}
-		r := decodeResult(t, raw)
-		if r.Status != "skipped" || r.Message != want[uid] {
-			t.Fatalf("%s result=%+v want message %q", uid, r, want[uid])
-		}
+	r := decodeResult(t, raw)
+	if r.Status != "skipped" || r.Message != "企业账号无签到体系（已跳过）" {
+		t.Fatalf("enterprise result=%+v", r)
 	}
-	if f.checkinHits.Load() != 0 || f.refreshHits.Load() != 0 {
-		t.Fatalf("unexpected upstream hits checkin=%d refresh=%d", f.checkinHits.Load(), f.refreshHits.Load())
+	if f.checkinHits.Load() != 0 || f.chatHits.Load() != 0 || f.refreshHits.Load() != 0 {
+		t.Fatalf("enterprise should not hit upstream: checkin=%d chat=%d refresh=%d",
+			f.checkinHits.Load(), f.chatHits.Load(), f.refreshHits.Load())
+	}
+}
+
+func TestCheckinGlobalRealChatAndIdempotency(t *testing.T) {
+	f := newFakeUpstream(t)
+	dir := t.TempDir()
+	e := f.engine(dir)
+	future := time.Now().Add(24 * time.Hour).Unix()
+	if _, err := e.ImportAccount(testAuthDoc(t, "glb", "国际", "global", "at-glb", "rt-glb", future, "")); err != nil {
+		t.Fatalf("import global: %v", err)
+	}
+	if err := e.SetCheckinModel("global:hy4-preview-f"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	f.chatModel = "hy4-preview-f"
+
+	raw, err := e.Checkin("glb")
+	if err != nil {
+		t.Fatalf("checkin global: %v", err)
+	}
+	r := decodeResult(t, raw)
+	if r.Status != "ok" || !strings.Contains(r.Message, "国际版签到完成") {
+		t.Fatalf("global result=%+v", r)
+	}
+	if f.chatHits.Load() != 1 || f.reportHits.Load() != 1 || f.checkinHits.Load() != 0 {
+		t.Fatalf("global hits chat=%d report=%d cn-checkin=%d", f.chatHits.Load(), f.reportHits.Load(), f.checkinHits.Load())
+	}
+	// 第二次：同日幂等，不再发真实对话。
+	raw2, err := e.Checkin("glb")
+	if err != nil {
+		t.Fatalf("second checkin: %v", err)
+	}
+	r2 := decodeResult(t, raw2)
+	if r2.Status != "already" || f.chatHits.Load() != 1 {
+		t.Fatalf("second result=%+v chatHits=%d", r2, f.chatHits.Load())
+	}
+	// 模型设置跨 Engine 实例持久化。
+	if got := NewEngine(dir).GetCheckinModel(); got != "global:hy4-preview-f" {
+		t.Fatalf("persisted model=%q", got)
+	}
+}
+
+func TestGlobalCheckinFailureNotMarkedDone(t *testing.T) {
+	f := newFakeUpstream(t)
+	e := f.engine(t.TempDir())
+	future := time.Now().Add(24 * time.Hour).Unix()
+	if _, err := e.ImportAccount(testAuthDoc(t, "glb", "国际", "global", "at-glb", "rt-glb", future, "")); err != nil {
+		t.Fatalf("import global: %v", err)
+	}
+	// fake chat 返回非 2xx：通过临时把 server 关掉模拟网络失败。
+	f.srv.Close()
+	raw, err := e.Checkin("glb")
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	r := decodeResult(t, raw)
+	if r.Status != "failed" {
+		t.Fatalf("result=%+v want failed", r)
+	}
+	if e.isCheckinDoneToday("glb") {
+		t.Fatal("failed checkin must not mark done")
 	}
 }
 

@@ -35,6 +35,7 @@ data class UiState(
     val progressTotal: Int = 0,
     val importSummary: ImportSummary? = null,
     val error: String? = null,
+    val checkinModel: String = "global:hy3",
 )
 
 class CheckinViewModel(
@@ -67,14 +68,26 @@ class CheckinViewModel(
             _state.update { it.copy(loading = true, error = null) }
             runCatching { engine.listAccounts() }
                 .onSuccess { accounts ->
+                    val model = runCatching { engine.getCheckinModel() }.getOrDefault("global:hy3")
                     _state.update { s ->
-                        s.copy(loading = false, rows = mergeRows(accounts, s.rows))
+                        s.copy(loading = false, rows = mergeRows(accounts, s.rows), checkinModel = model)
                     }
                 }
                 .onFailure { e ->
                     _state.update {
                         it.copy(loading = false, error = "读取账号失败：${e.message}")
                     }
+                }
+        }
+    }
+
+    fun setCheckinModel(model: String) {
+        val value = model.trim().ifBlank { "global:hy3" }
+        _state.update { it.copy(checkinModel = value) }
+        viewModelScope.launch(io) {
+            runCatching { engine.setCheckinModel(value) }
+                .onFailure { e ->
+                    _state.update { it.copy(error = "保存签到模型失败：${e.message}") }
                 }
         }
     }
