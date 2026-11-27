@@ -1,6 +1,6 @@
-# Auth & secrets
+# Auth & secrets（data/ 锚定根目录，避免忽略 android 的 com/wb2api/checkin/data 源码包）
 auths/
-data/
+/data/
 *.key
 *.pem
 *.env
@@ -48,3 +48,10 @@ server.exe
 
 # CodeGraph 本地索引
 .codegraph/
+
+# Android build artifacts
+android/.gradle/
+android/local.properties
+android/**/build/
+android/app/libs/*.aar
+android/app/libs/*.jar
