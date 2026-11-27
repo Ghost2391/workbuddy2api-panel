@@ -14,17 +14,27 @@ import com.wb2api.checkin.data.ImportFile
 import com.wb2api.checkin.data.ImportSummary
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 data class AccountRow(
     val account: Account,
     val result: CheckinResult? = null,
+)
+
+data class LoginState(
+    val realm: String,
+    val state: String,
+    val url: String,
+    val statusText: String = "请在浏览器中完成授权…",
 )
 
 data class UiState(
@@ -34,18 +44,22 @@ data class UiState(
     val progressDone: Int = 0,
     val progressTotal: Int = 0,
     val importSummary: ImportSummary? = null,
+    val loginState: LoginState? = null,
+    val infoMessage: String? = null,
     val error: String? = null,
 )
 
 class CheckinViewModel(
     private val engine: EngineClient,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val loginPollDelayMs: Long = 2500L,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val opLock = AtomicBoolean(false)
+    private var loginJob: Job? = null
 
     private fun claimOperation(): Boolean {
         if (!opLock.compareAndSet(false, true)) return false
@@ -131,8 +145,25 @@ class CheckinViewModel(
     }
 
     fun checkinAll() {
+        checkinTargets(_state.value.rows.map { it.account.uid })
+    }
+
+    fun checkinPending() {
+        val targets = _state.value.rows
+            .filter { row ->
+                val st = row.result?.status
+                st == null || st == "failed" || st == "auth_invalid"
+            }
+            .map { it.account.uid }
+        if (targets.isEmpty()) {
+            _state.update { it.copy(infoMessage = "所有账号今日均已处理") }
+            return
+        }
+        checkinTargets(targets)
+    }
+
+    private fun checkinTargets(targets: List<String>) {
         if (!claimOperation()) return
-        val targets = _state.value.rows.map { it.account.uid }
         if (targets.isEmpty()) {
             releaseOperation()
             return
@@ -154,8 +185,177 @@ class CheckinViewModel(
         }
     }
 
+    fun refreshCredits(uid: String) {
+        if (!claimOperation()) return
+        viewModelScope.launch(io) {
+            try {
+                runCatching { engine.refreshCredits(uid) }
+                    .onSuccess { updated ->
+                        _state.update { s ->
+                            s.copy(
+                                rows = s.rows.map { row ->
+                                    if (row.account.uid == uid) {
+                                        row.copy(
+                                            account = updated,
+                                            result = updated.lastCheckin ?: row.result,
+                                        )
+                                    } else {
+                                        row
+                                    }
+                                },
+                                infoMessage = "积分已刷新",
+                            )
+                        }
+                    }
+                    .onFailure { e ->
+                        _state.update { it.copy(error = e.message ?: "刷新积分失败") }
+                    }
+            } finally {
+                releaseOperation()
+            }
+        }
+    }
+
+    fun deleteAccount(uid: String) {
+        if (!claimOperation()) return
+        viewModelScope.launch(io) {
+            try {
+                runCatching { engine.deleteAccount(uid) }
+                    .onSuccess {
+                        _state.update { s ->
+                            s.copy(
+                                rows = s.rows.filterNot { it.account.uid == uid },
+                                infoMessage = "已删除账号",
+                            )
+                        }
+                    }
+                    .onFailure { e ->
+                        _state.update { it.copy(error = "删除失败：${e.message ?: "未知错误"}") }
+                    }
+            } finally {
+                releaseOperation()
+            }
+        }
+    }
+
+    fun exportAccount(uid: String, onReady: (fileName: String, content: String) -> Unit) {
+        viewModelScope.launch(io) {
+            runCatching {
+                val fileName = _state.value.rows
+                    .firstOrNull { it.account.uid == uid }
+                    ?.account?.file
+                    ?.ifBlank { "workbuddy-$uid.json" }
+                    ?: "workbuddy-$uid.json"
+                fileName to engine.exportAccount(uid)
+            }.onSuccess { (fileName, content) ->
+                withContext(Dispatchers.Main) {
+                    onReady(fileName, content)
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(error = "导出失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
+    fun exportAllAccounts(onReady: (List<Pair<String, String>>) -> Unit) {
+        val rows = _state.value.rows
+        if (rows.isEmpty()) {
+            _state.update { it.copy(infoMessage = "没有可导出的账号") }
+            return
+        }
+        viewModelScope.launch(io) {
+            runCatching {
+                rows.map { row ->
+                    val name = row.account.file.ifBlank { "workbuddy-${row.account.uid}.json" }
+                    name to engine.exportAccount(row.account.uid)
+                }
+            }.onSuccess { files ->
+                withContext(Dispatchers.Main) {
+                    onReady(files)
+                }
+            }.onFailure { e ->
+                _state.update { it.copy(error = "导出失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
+    fun startLogin(realm: String, onOpenUrl: (String) -> Unit) {
+        if (!claimOperation()) return
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch(io) {
+            try {
+                val started = runCatching { engine.startLogin(realm) }
+                    .getOrElse { e ->
+                        _state.update { it.copy(error = e.message ?: "发起登录失败") }
+                        return@launch
+                    }
+                _state.update {
+                    it.copy(
+                        loginState = LoginState(
+                            realm = started.realm,
+                            state = started.state,
+                            url = started.url,
+                        ),
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    onOpenUrl(started.url)
+                }
+
+                // 最多轮询约 5 分钟（120 次 * 2.5s）
+                repeat(120) {
+                    if (loginPollDelayMs > 0) delay(loginPollDelayMs)
+                    val poll = runCatching { engine.pollLogin(started.state) }
+                        .getOrElse { e ->
+                            _state.update {
+                                it.copy(
+                                    loginState = null,
+                                    error = e.message ?: "登录轮询失败",
+                                )
+                            }
+                            return@launch
+                        }
+                    if (poll.done) {
+                        runCatching { engine.listAccounts() }
+                            .onSuccess { accounts ->
+                                _state.update { s ->
+                                    s.copy(
+                                        rows = mergeRows(accounts, s.rows),
+                                        loginState = null,
+                                        infoMessage = "登录成功：${poll.account?.nickname?.ifBlank { poll.account.uid } ?: "已添加账号"}",
+                                    )
+                                }
+                            }
+                            .onFailure { e ->
+                                _state.update {
+                                    it.copy(loginState = null, error = "登录成功但刷新列表失败：${e.message}")
+                                }
+                            }
+                        return@launch
+                    }
+                }
+                _state.update {
+                    it.copy(loginState = null, error = "登录超时，请重试")
+                }
+            } finally {
+                releaseOperation()
+            }
+        }
+    }
+
+    fun cancelLogin() {
+        loginJob?.cancel()
+        loginJob = null
+        _state.update { it.copy(loginState = null) }
+        releaseOperation()
+    }
+
     fun clearImportSummary() {
         _state.update { it.copy(importSummary = null) }
+    }
+
+    fun clearInfoMessage() {
+        _state.update { it.copy(infoMessage = null) }
     }
 
     fun clearError() {
@@ -173,7 +373,9 @@ class CheckinViewModel(
 
     private fun mergeRows(accounts: List<Account>, old: List<AccountRow>): List<AccountRow> {
         val byUid = old.associateBy { it.account.uid }
-        return accounts.map { AccountRow(it, byUid[it.uid]?.result) }
+        return accounts.map { acc ->
+            AccountRow(acc, acc.lastCheckin ?: byUid[acc.uid]?.result)
+        }
     }
 
     companion object {
@@ -187,4 +389,22 @@ class CheckinViewModel(
 }
 
 private fun List<AccountRow>.merge(result: CheckinResult): List<AccountRow> =
-    map { if (it.account.uid == result.uid) it.copy(result = result) else it }
+    map { row ->
+        if (row.account.uid == result.uid) {
+            val updatedAccount = if (result.hasCredits) {
+                row.account.copy(
+                    lastCheckin = result,
+                    hasCredits = true,
+                    creditsRemain = result.creditsRemain,
+                    creditsTotal = result.creditsTotal,
+                    creditsExpiring = result.creditsExpiring,
+                    creditsAt = result.creditsAt,
+                )
+            } else {
+                row.account.copy(lastCheckin = result)
+            }
+            row.copy(account = updatedAccount, result = result)
+        } else {
+            row
+        }
+    }

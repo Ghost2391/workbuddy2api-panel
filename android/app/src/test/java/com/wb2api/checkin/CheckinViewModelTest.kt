@@ -4,11 +4,14 @@ import com.wb2api.checkin.data.Account
 import com.wb2api.checkin.data.CheckinResult
 import com.wb2api.checkin.data.EngineClient
 import com.wb2api.checkin.data.ImportFile
+import com.wb2api.checkin.data.PollLoginResult
+import com.wb2api.checkin.data.StartLoginResult
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -28,6 +31,7 @@ class CheckinViewModelTest {
     ) : EngineClient {
         val checked = mutableListOf<String>()
         var throwFor: String? = null
+        var pollCalls = 0
 
         override fun listAccounts(): List<Account> = accounts
 
@@ -40,12 +44,48 @@ class CheckinViewModelTest {
         override fun checkin(uid: String): CheckinResult {
             checked += uid
             if (uid == throwFor) error("boom")
-            return CheckinResult(uid = uid, status = "ok", message = "签到成功")
+            return CheckinResult(
+                uid = uid,
+                status = "ok",
+                message = "签到成功",
+                hasCredits = true,
+                creditsRemain = 120,
+                creditsTotal = 200,
+            )
+        }
+
+        override fun refreshCredits(uid: String): Account {
+            val updated = accounts.first { it.uid == uid }.copy(
+                hasCredits = true,
+                creditsRemain = 300,
+                creditsTotal = 500,
+            )
+            accounts = accounts.map { if (it.uid == uid) updated else it }
+            return updated
+        }
+
+        override fun deleteAccount(uid: String) {
+            accounts = accounts.filterNot { it.uid == uid }
+        }
+
+        override fun exportAccount(uid: String): String = """{"uid":"$uid"}"""
+
+        override fun startLogin(realm: String): StartLoginResult =
+            StartLoginResult(state = "st-1", url = "https://example.test/auth", realm = realm)
+
+        override fun pollLogin(state: String): PollLoginResult {
+            pollCalls++
+            if (pollCalls < 2) {
+                return PollLoginResult(done = false, message = "login ing")
+            }
+            val acc = Account(uid = "u-login", nickname = "新登录")
+            accounts = accounts + acc
+            return PollLoginResult(done = true, account = acc)
         }
     }
 
     private fun viewModel(engine: FakeEngine) =
-        CheckinViewModel(engine, io = UnconfinedTestDispatcher())
+        CheckinViewModel(engine, io = UnconfinedTestDispatcher(), loginPollDelayMs = 0L)
 
     @Test
     fun `loads accounts on init`() {
@@ -113,5 +153,63 @@ class CheckinViewModelTest {
         assertEquals(1, summary.ok)
         assertEquals(1, summary.failures.size)
         assertEquals(listOf("u1", "u2", "u3"), vm.state.value.rows.map { it.account.uid })
+    }
+
+    @Test
+    fun `loads persisted lastCheckin from listAccounts on init`() {
+        val persisted = CheckinResult(uid = "u1", status = "ok", message = "签到成功")
+        val engine = FakeEngine(
+            accounts = listOf(
+                Account(uid = "u1", nickname = "一号", lastCheckin = persisted, hasCredits = true, creditsRemain = 250),
+                Account(uid = "u2", nickname = "二号"),
+            ),
+        )
+        val vm = viewModel(engine)
+        assertEquals("ok", vm.state.value.rows[0].result?.status)
+        assertEquals(250L, vm.state.value.rows[0].account.creditsRemain)
+        assertNull(vm.state.value.rows[1].result)
+    }
+
+    @Test
+    fun `checkinPending only checks pending and failed accounts`() {
+        val engine = FakeEngine(
+            accounts = listOf(
+                Account(uid = "u1", lastCheckin = CheckinResult(uid = "u1", status = "ok")),
+                Account(uid = "u2", lastCheckin = CheckinResult(uid = "u2", status = "failed")),
+                Account(uid = "u3"),
+            ),
+        )
+        val vm = viewModel(engine)
+        vm.checkinPending()
+        assertEquals(listOf("u2", "u3"), engine.checked)
+    }
+
+    @Test
+    fun `refreshCredits and deleteAccount update state`() {
+        val engine = FakeEngine()
+        val vm = viewModel(engine)
+
+        vm.refreshCredits("u1")
+        assertTrue(vm.state.value.rows[0].account.hasCredits)
+        assertEquals(300L, vm.state.value.rows[0].account.creditsRemain)
+
+        vm.deleteAccount("u1")
+        assertEquals(listOf("u2"), vm.state.value.rows.map { it.account.uid })
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `startLogin polls until done and refreshes accounts`() {
+        val engine = FakeEngine()
+        val vm = CheckinViewModel(engine, io = dispatcher, loginPollDelayMs = 0L)
+        var openedUrl: String? = null
+
+        vm.startLogin("cn") { openedUrl = it }
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("https://example.test/auth", openedUrl)
+        assertNull(vm.state.value.loginState)
+        assertTrue(vm.state.value.rows.any { it.account.uid == "u-login" })
+        assertTrue(!vm.state.value.busy)
     }
 }
