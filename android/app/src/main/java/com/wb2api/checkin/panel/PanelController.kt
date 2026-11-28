@@ -77,10 +77,10 @@ object PanelController {
                 return@launch
             }
             val ok = proc.start { code -> onExit(gen, code) }
+            var killStarted = false
             synchronized(lock) {
                 if (stale(gen)) {
-                    // 启动过程中被停止：杀掉刚拉起的进程，不留孤儿。
-                    if (ok) proc.stop()
+                    killStarted = ok
                     _state.update { it.copy(running = false, starting = false) }
                 } else if (ok) {
                     attempt = 0
@@ -89,11 +89,13 @@ object PanelController {
                     _state.update { it.copy(running = false, starting = false, error = "面板启动失败") }
                 }
             }
+            // 启动过程中被停止：在锁外杀掉刚拉起的进程，不留孤儿也不长时间持锁。
+            if (killStarted) proc.stop()
         }
     }
 
-    /** 调用方须持有 lock。 */
-    private fun stale(gen: Int): Boolean = gen != generation
+    /** 内部加锁，调用方可持有或不持有 lock（synchronized 可重入）。 */
+    private fun stale(gen: Int): Boolean = synchronized(lock) { gen != generation }
 
     private fun onExit(gen: Int, code: Int) {
         synchronized(lock) {
