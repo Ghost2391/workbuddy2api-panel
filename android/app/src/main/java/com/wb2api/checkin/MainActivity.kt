@@ -45,7 +45,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (!PanelController.state.value.running) PanelService.start(this)
         setContent {
             WbCheckinTheme {
                 RequestNotificationPermission()
@@ -62,18 +61,19 @@ class MainActivity : ComponentActivity() {
                     if (uris.isEmpty()) return@rememberLauncherForActivityResult
                     scope.launch {
                         busy = true
+                        val wasRunning = PanelController.state.value.running
                         val summary = runCatching {
                             withContext(Dispatchers.IO) {
                                 val files = readImportFiles(context.contentResolver, uris)
                                 // 导入前停面板，避免与面板并发读写 auths。
-                                PanelController.stopAndWait()
+                                if (wasRunning) PanelController.stopAndWait()
                                 repo.importAccounts(files)
                             }
                         }.getOrElse { error ->
                             ImportSummary(0, 0, listOf("导入失败：${error.message ?: "未知错误"}"))
                         }
-                        // 主线程恢复面板（前台服务启动须在主线程）。
-                        PanelService.start(context)
+                        // 只在导入前面板本就运行时才恢复（主线程启动前台服务）。
+                        if (wasRunning) PanelService.start(context)
                         busy = false
                         showImportSummary(context, summary)
                     }
