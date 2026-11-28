@@ -88,11 +88,14 @@ class PanelProcess(
         stopping.set(true)
         val p = process ?: return
         process = null
-        runCatching { p.destroy() }
-        runCatching { p.waitFor(3, TimeUnit.SECONDS) }
-        if (p.isAlive) runCatching { p.destroyForcibly() }
         reader?.interrupt()
         reader = null
+        runCatching { p.destroy() }
+        // 等待与强杀放到后台线程，避免在 UI/服务主线程阻塞。
+        thread(name = "wbpanel-stop", isDaemon = true) {
+            val exited = runCatching { p.waitFor(3, TimeUnit.SECONDS) }.getOrDefault(false)
+            if (!exited) runCatching { p.destroyForcibly() }
+        }
     }
 
     private fun waitReady(timeoutMs: Long = 15_000L): Boolean {

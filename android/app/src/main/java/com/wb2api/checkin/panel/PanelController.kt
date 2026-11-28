@@ -119,8 +119,11 @@ object PanelController {
     }
 
     private fun redact(line: String): String = line
-        .replace(Regex("""(?i)(api[_-]?key["']?\s*[:=]\s*["']?)[0-9a-f]{16,}""")) { m ->
-            m.groupValues[1] + "***"
-        }
-        .replace(Regex("""(?i)(bearer\s+)[0-9a-f-]{16,}""")) { m -> m.groupValues[1] + "***" }
+        .replace(API_KEY_RE) { m -> m.groupValues[1] + "***" }
+        .replace(BEARER_RE) { m -> m.groupValues[1] + "***" }
+        .replace(SK_RE, "sk-***")
+
+    private val API_KEY_RE = Regex("""(?i)(api[_-]?key["']?\s*[:=]\s*["']?)[^\s"',}]+""")
+    private val BEARER_RE = Regex("""(?i)(bearer\s+)[^\s"',}]+""")
+    private val SK_RE = Regex("""sk-[A-Za-z0-9_-]{8,}""")
 }
