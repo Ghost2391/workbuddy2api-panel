@@ -201,7 +201,7 @@ private fun AccountDataCard(
                 OutlinedButton(onClick = onExportAll, enabled = !busy) { Text("导出全部 ZIP") }
             }
             Text(
-                "导入前会暂停面板，完成后自动恢复；导出不影响面板运行。",
+                "若面板正在运行，导入时会自动暂停并在完成后恢复；导出随时可用。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

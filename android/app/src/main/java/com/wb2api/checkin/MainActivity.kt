@@ -61,7 +61,8 @@ class MainActivity : ComponentActivity() {
                     if (uris.isEmpty()) return@rememberLauncherForActivityResult
                     scope.launch {
                         busy = true
-                        val wasRunning = PanelController.state.value.running
+                        val panelState = PanelController.state.value
+                        val wasRunning = panelState.running || panelState.starting
                         val summary = runCatching {
                             withContext(Dispatchers.IO) {
                                 val files = readImportFiles(context.contentResolver, uris)
@@ -85,18 +86,27 @@ class MainActivity : ComponentActivity() {
                     val files = pendingExportZip
                     pendingExportZip = null
                     if (uri != null && files != null) {
-                        scope.launch(Dispatchers.IO) {
-                            runCatching {
-                                context.contentResolver.openOutputStream(uri)?.use { out ->
-                                    ZipOutputStream(out).use { zip ->
-                                        for ((name, content) in files) {
-                                            zip.putNextEntry(ZipEntry(name))
-                                            zip.write(content.toByteArray(Charsets.UTF_8))
-                                            zip.closeEntry()
+                        scope.launch {
+                            val ok = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val out = context.contentResolver.openOutputStream(uri)
+                                        ?: error("无法打开文件")
+                                    out.use { stream ->
+                                        ZipOutputStream(stream).use { zip ->
+                                            for ((name, content) in files) {
+                                                zip.putNextEntry(ZipEntry(name))
+                                                zip.write(content.toByteArray(Charsets.UTF_8))
+                                                zip.closeEntry()
+                                            }
                                         }
                                     }
-                                }
+                                }.isSuccess
                             }
+                            Toast.makeText(
+                                context,
+                                if (ok) "已导出 ${files.size} 个账号" else "导出失败，请重试",
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         }
                     }
                 }
@@ -126,16 +136,24 @@ class MainActivity : ComponentActivity() {
                     onExportAll = {
                         scope.launch {
                             busy = true
-                            val files = withContext(Dispatchers.IO) {
-                                runCatching { repo.exportAll() }.getOrDefault(emptyList())
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { repo.exportAll() }
                             }
                             busy = false
-                            if (files.isEmpty()) {
-                                Toast.makeText(context, "没有可导出的账号", Toast.LENGTH_SHORT).show()
-                            } else {
-                                // SAF launcher 必须在主线程调用。
-                                pendingExportZip = files
-                                exportZipLauncher.launch("wb-auths-${LocalDate.now()}.zip")
+                            result.onFailure { error ->
+                                Toast.makeText(
+                                    context,
+                                    "导出失败：${error.message ?: "未知错误"}",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }.onSuccess { files ->
+                                if (files.isEmpty()) {
+                                    Toast.makeText(context, "没有可导出的账号", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    // SAF launcher 必须在主线程调用。
+                                    pendingExportZip = files
+                                    exportZipLauncher.launch("wb-auths-${LocalDate.now()}.zip")
+                                }
                             }
                         }
                     },
@@ -146,10 +164,17 @@ class MainActivity : ComponentActivity() {
 }
 
 private fun showImportSummary(context: Context, summary: ImportSummary) {
-    val message = if (summary.failures.isEmpty()) {
-        "成功导入 ${summary.ok} 个账号"
-    } else {
-        "导入 ${summary.ok}/${summary.total} 个成功，${summary.failures.size} 个失败"
+    val message = buildString {
+        append(
+            if (summary.failures.isEmpty()) {
+                "成功导入 ${summary.ok} 个账号"
+            } else {
+                "导入 ${summary.ok}/${summary.total} 个成功，${summary.failures.size} 个失败"
+            },
+        )
+        // 失败原因逐条列出（文件名 + 原因），凭据不在此列。
+        summary.failures.take(5).forEach { appendLine().append(it) }
+        if (summary.failures.size > 5) appendLine().append("…及其他 ${summary.failures.size - 5} 个")
     }
     Toast.makeText(context, message, Toast.LENGTH_LONG).show()
 }
