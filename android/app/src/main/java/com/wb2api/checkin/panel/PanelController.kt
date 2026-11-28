@@ -49,6 +49,24 @@ object PanelController {
     private var retryJob: Job? = null
     private var generation = 0
 
+    /**
+     * 停止面板并等待进程真正退出（阻塞，须在后台线程调用）。
+     * 账号 JSON 导入前调用，避免与面板并发读写 auths。
+     */
+    suspend fun stopAndWait() {
+        val done = kotlinx.coroutines.CompletableDeferred<Unit>()
+        scope.launch {
+            generation++
+            retryJob?.cancel()
+            retryJob = null
+            attempt = 0
+            _state.update { it.copy(error = null) }
+            stopProcessLocked()
+            done.complete(Unit)
+        }
+        done.await()
+    }
+
     fun start(context: Context) {
         val app = context.applicationContext
         scope.launch {
@@ -112,16 +130,22 @@ object PanelController {
         }
     }
 
+    /** 只在 worker 线程调用：阻塞停止面板进程并等待退出。 */
+    private fun stopProcessLocked() {
+        val proc = process
+        process = null
+        _state.update { it.copy(running = false, starting = false) }
+        proc?.stop()
+    }
+
     fun stop() {
         scope.launch {
             generation++
             retryJob?.cancel()
             retryJob = null
             attempt = 0
-            val proc = process
-            process = null
-            _state.update { it.copy(running = false, starting = false, error = null) }
-            proc?.stop()
+            _state.update { it.copy(error = null) }
+            stopProcessLocked()
         }
     }
 

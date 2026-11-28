@@ -18,14 +18,28 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wb2api.checkin.data.AccountJsonRepository
+import com.wb2api.checkin.data.ImportSummary
+import com.wb2api.checkin.data.readImportFiles
 import com.wb2api.checkin.panel.PanelConfig
 import com.wb2api.checkin.panel.PanelController
 import com.wb2api.checkin.panel.PanelService
 import com.wb2api.checkin.ui.PanelHostScreen
 import com.wb2api.checkin.ui.WbCheckinTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.time.LocalDate
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,9 +50,60 @@ class MainActivity : ComponentActivity() {
             WbCheckinTheme {
                 RequestNotificationPermission()
                 val context = LocalContext.current
+                val scope = rememberCoroutineScope()
                 val state by PanelController.state.collectAsStateWithLifecycle()
+                val repo = remember { AccountJsonRepository(File(context.filesDir, "auths")) }
+                var busy by remember { mutableStateOf(false) }
+                var pendingExportZip by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+
+                val importLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenMultipleDocuments(),
+                ) { uris ->
+                    if (uris.isEmpty()) return@rememberLauncherForActivityResult
+                    scope.launch {
+                        busy = true
+                        val summary = runCatching {
+                            withContext(Dispatchers.IO) {
+                                val files = readImportFiles(context.contentResolver, uris)
+                                // 导入前停面板，避免与面板并发读写 auths。
+                                PanelController.stopAndWait()
+                                repo.importAccounts(files)
+                            }
+                        }.getOrElse { error ->
+                            ImportSummary(0, 0, listOf("导入失败：${error.message ?: "未知错误"}"))
+                        }
+                        // 主线程恢复面板（前台服务启动须在主线程）。
+                        PanelService.start(context)
+                        busy = false
+                        showImportSummary(context, summary)
+                    }
+                }
+
+                val exportZipLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/zip"),
+                ) { uri ->
+                    val files = pendingExportZip
+                    pendingExportZip = null
+                    if (uri != null && files != null) {
+                        scope.launch(Dispatchers.IO) {
+                            runCatching {
+                                context.contentResolver.openOutputStream(uri)?.use { out ->
+                                    ZipOutputStream(out).use { zip ->
+                                        for ((name, content) in files) {
+                                            zip.putNextEntry(ZipEntry(name))
+                                            zip.write(content.toByteArray(Charsets.UTF_8))
+                                            zip.closeEntry()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 PanelHostScreen(
                     state = state,
+                    busy = busy,
                     onStart = { PanelService.start(context) },
                     onStop = { PanelService.stop(context) },
                     onClearError = PanelController::clearError,
@@ -53,10 +118,40 @@ class MainActivity : ComponentActivity() {
                         copyToClipboard(context, state.apiKey)
                         Toast.makeText(context, "已复制 Key", Toast.LENGTH_SHORT).show()
                     },
+                    onImport = {
+                        importLauncher.launch(
+                            arrayOf("application/json", "text/plain", "application/octet-stream"),
+                        )
+                    },
+                    onExportAll = {
+                        scope.launch {
+                            busy = true
+                            val files = withContext(Dispatchers.IO) {
+                                runCatching { repo.exportAll() }.getOrDefault(emptyList())
+                            }
+                            busy = false
+                            if (files.isEmpty()) {
+                                Toast.makeText(context, "没有可导出的账号", Toast.LENGTH_SHORT).show()
+                            } else {
+                                // SAF launcher 必须在主线程调用。
+                                pendingExportZip = files
+                                exportZipLauncher.launch("wb-auths-${LocalDate.now()}.zip")
+                            }
+                        }
+                    },
                 )
             }
         }
     }
+}
+
+private fun showImportSummary(context: Context, summary: ImportSummary) {
+    val message = if (summary.failures.isEmpty()) {
+        "成功导入 ${summary.ok} 个账号"
+    } else {
+        "导入 ${summary.ok}/${summary.total} 个成功，${summary.failures.size} 个失败"
+    }
+    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
 }
 
 @Composable

@@ -40,11 +40,14 @@ import com.wb2api.checkin.panel.PanelState
 @Composable
 fun PanelHostScreen(
     state: PanelState,
+    busy: Boolean = false,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onClearError: () -> Unit,
     onOpenPanel: () -> Unit,
     onCopyKey: () -> Unit,
+    onImport: () -> Unit,
+    onExportAll: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -67,6 +70,11 @@ fun PanelHostScreen(
         }
 
         EndpointCard(state = state, onCopyKey = onCopyKey)
+        AccountDataCard(
+            busy = busy,
+            onImport = onImport,
+            onExportAll = onExportAll,
+        )
         DshGoCard()
         LogCard(logs = state.logs)
     }
@@ -170,6 +178,33 @@ private fun EndpointCard(state: PanelState, onCopyKey: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun AccountDataCard(
+    busy: Boolean,
+    onImport: () -> Unit,
+    onExportAll: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("账号 JSON", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "导入单个账号 JSON（可多选），或导出全部账号为 ZIP。导出文件含明文凭证，请妥善保管。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onImport, enabled = !busy) { Text("导入 JSON") }
+                OutlinedButton(onClick = onExportAll, enabled = !busy) { Text("导出全部 ZIP") }
+            }
+            Text(
+                "导入前会暂停面板，完成后自动恢复；导出不影响面板运行。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
