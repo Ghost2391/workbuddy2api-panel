@@ -76,7 +76,12 @@ class PanelProcess(
                 val code = runCatching { p.waitFor() }.getOrDefault(-1)
                 if (!stopping.get()) onExit(code)
             }
-            waitReady()
+            val ready = waitReady()
+            if (!ready) {
+                onLog("面板未就绪，结束进程")
+                stop()
+            }
+            ready
         }.getOrElse { error ->
             onLog("启动面板失败：${error.message}")
             stop()
@@ -84,6 +89,7 @@ class PanelProcess(
         }
     }
 
+    /** 阻塞到进程退出；只能从后台线程调用（PanelController 在 IO 上调度）。 */
     fun stop() {
         stopping.set(true)
         val p = process ?: return
@@ -91,11 +97,8 @@ class PanelProcess(
         reader?.interrupt()
         reader = null
         runCatching { p.destroy() }
-        // 等待与强杀放到后台线程，避免在 UI/服务主线程阻塞。
-        thread(name = "wbpanel-stop", isDaemon = true) {
-            val exited = runCatching { p.waitFor(3, TimeUnit.SECONDS) }.getOrDefault(false)
-            if (!exited) runCatching { p.destroyForcibly() }
-        }
+        val exited = runCatching { p.waitFor(3, TimeUnit.SECONDS) }.getOrDefault(false)
+        if (!exited) runCatching { p.destroyForcibly() }
     }
 
     private fun waitReady(timeoutMs: Long = 15_000L): Boolean {

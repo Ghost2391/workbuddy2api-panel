@@ -187,7 +187,7 @@ private fun DshGoCard() {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                "Base URL：${PanelConfig.BASE_URL}${PanelConfig.API_BASE}\nAPI Key：上面复制的 Key",
+                "Base URL：${PanelConfig.API_BASE}\nAPI Key：上面复制的 Key",
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
             )

@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
  */
 class PanelService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var observing = false
 
     override fun onCreate() {
         super.onCreate()
@@ -41,18 +42,6 @@ class PanelService : Service() {
                 0
             },
         )
-        PanelController.start(this)
-        scope.launch {
-            PanelController.state.collect { state ->
-                val text = when {
-                    state.error != null -> "面板异常：${state.error}"
-                    state.starting -> "启动中…"
-                    state.running -> "运行中 · ${state.url}"
-                    else -> "已停止"
-                }
-                notifications().notify(NOTIFICATION_ID, buildNotification(text))
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,6 +50,21 @@ class PanelService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (!observing) {
+            observing = true
+            scope.launch {
+                PanelController.state.collect { state ->
+                    val text = when {
+                        state.error != null -> "面板异常：${state.error}"
+                        state.starting -> "启动中…"
+                        state.running -> "运行中 · ${state.url}"
+                        else -> "已停止"
+                    }
+                    notifications().notify(NOTIFICATION_ID, buildNotification(text))
+                }
+            }
+        }
+        PanelController.start(this)
         return START_STICKY
     }
 
