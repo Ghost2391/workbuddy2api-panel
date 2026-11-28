@@ -164,6 +164,11 @@ private fun EndpointCard(state: PanelState, onCopyKey: () -> Unit) {
                     )
                 }
                 TextButton(onClick = onCopyKey) { Text("复制 Key") }
+                Text(
+                    "打开网页面板时粘贴同一个 Key 登录，浏览器会记住。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
