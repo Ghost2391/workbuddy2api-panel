@@ -24,4 +24,20 @@ class GoEngineClient(authDir: File) : EngineClient {
     override fun setCheckinModel(model: String) {
         engine.setCheckinModel(model)
     }
+
+    override fun refreshCredits(uid: String): Account =
+        json.decodeFromString(engine.refreshCredits(uid))
+
+    override fun deleteAccount(uid: String) {
+        engine.deleteAccount(uid)
+    }
+
+    override fun exportAccount(uid: String): String =
+        engine.exportAccount(uid)
+
+    override fun startLogin(realm: String): StartLoginResult =
+        json.decodeFromString(engine.startLogin(realm))
+
+    override fun pollLogin(state: String): PollLoginResult =
+        json.decodeFromString(engine.pollLogin(state))
 }

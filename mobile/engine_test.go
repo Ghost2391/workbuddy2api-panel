@@ -564,3 +564,217 @@ func TestConcurrentCheckinSerialized(t *testing.T) {
 		t.Fatalf("checkin hits=%d want 2", f.checkinHits.Load())
 	}
 }
+
+func newFakeResourceAndLoginServer(t *testing.T, loginPollReady *atomic.Bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/billing/meter/daily-checkin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"msg":"ok","data":{}}`)
+	})
+	mux.HandleFunc("/v2/billing/meter/get-user-resource", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		expEnd := time.Now().Add(48 * time.Hour).Format("2006-01-02 15:04:05")
+		_, _ = io.WriteString(w, fmt.Sprintf(`{"code":0,"msg":"ok","data":{"Response":{"Data":{"Accounts":[{"PackageName":"free","CycleCapacitySize":500,"CycleCapacityRemain":320,"CycleCapacityUsed":180,"CycleEndTime":%q}]}}}}`, expEnd))
+	})
+	mux.HandleFunc("/v2/plugin/auth/state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"msg":"ok","data":{"state":"st-123","authUrl":"https://example.test/auth?state=st-123"}}`)
+	})
+	mux.HandleFunc("/v2/plugin/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if loginPollReady != nil && !loginPollReady.Load() {
+			_, _ = io.WriteString(w, `{"code":10001,"msg":"login ing","data":null}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":0,"msg":"ok","data":{"accessToken":"at-login","refreshToken":"rt-login","expiresIn":7200,"domain":"www.codebuddy.cn"}}`)
+	})
+	mux.HandleFunc("/v2/plugin/login/account", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"msg":"ok","data":{"uid":"login-u1","nickname":"扫码新号","enterpriseId":""}}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newTestUpstream(srv *httptest.Server) *upstream.Client {
+	up := upstream.New()
+	up.HTTP = srv.Client()
+	up.ChatBaseCN = srv.URL
+	up.BillingBaseCN = srv.URL
+	return up
+}
+
+func TestCheckinPersistsAcrossRestartAndExpiresNextDay(t *testing.T) {
+	srv := newFakeResourceAndLoginServer(t, nil)
+	dir := t.TempDir()
+	day1 := time.Date(2026, 11, 27, 9, 0, 0, 0, time.Local)
+
+	up := newTestUpstream(srv)
+	e1 := newEngineWith(dir, up)
+	e1.now = func() time.Time { return day1 }
+
+	// 过期时间锚定真实时钟：NeedsRefresh 用 time.Now 判断，硬编码日期会随实际日期推移而失效。
+	future := time.Now().Add(48 * time.Hour).Unix()
+	if _, err := e1.ImportAccount(testAuthDoc(t, "u1", "一号", "cn", "at-1", "rt-1", future, "")); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	raw, err := e1.Checkin("u1")
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	res := decodeResult(t, raw)
+	if res.Status != "ok" || !res.HasCredits || res.CreditsRemain != 320 || res.CreditsTotal != 500 || res.CreditsExpiring != 320 {
+		t.Fatalf("unexpected checkin result: %+v", res)
+	}
+
+	// 模拟 App 重启：新建 Engine 实例，仍在同一天，ListAccounts 必须带上当日已签状态与积分。
+	e2 := newEngineWith(dir, up)
+	e2.now = func() time.Time { return day1.Add(3 * time.Hour) }
+	listRaw, err := e2.ListAccounts()
+	if err != nil {
+		t.Fatalf("list after restart: %v", err)
+	}
+	var list []accountJSON
+	if err := json.Unmarshal([]byte(listRaw), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 || list[0].LastCheckin == nil || list[0].LastCheckin.Status != "ok" {
+		t.Fatalf("restart lost today's checkin status: %+v", list)
+	}
+	if !list[0].HasCredits || list[0].CreditsRemain != 320 {
+		t.Fatalf("restart lost credits: %+v", list[0])
+	}
+
+	// 跨零点到次日：LastCheckin 自然失效为 nil（待签到），积分快照保留。
+	e3 := newEngineWith(dir, up)
+	e3.now = func() time.Time { return day1.Add(24 * time.Hour) }
+	listRaw, err = e3.ListAccounts()
+	if err != nil {
+		t.Fatalf("list next day: %v", err)
+	}
+	list = nil
+	if err := json.Unmarshal([]byte(listRaw), &list); err != nil {
+		t.Fatalf("decode next day list: %v", err)
+	}
+	if len(list) != 1 || list[0].LastCheckin != nil {
+		t.Fatalf("next day should clear LastCheckin, got: %+v", list)
+	}
+	if !list[0].HasCredits || list[0].CreditsRemain != 320 {
+		t.Fatalf("next day should keep cached credits: %+v", list[0])
+	}
+}
+
+func TestRefreshCreditsPreservesCheckinStatus(t *testing.T) {
+	srv := newFakeResourceAndLoginServer(t, nil)
+	dir := t.TempDir()
+	now := time.Date(2026, 11, 27, 10, 0, 0, 0, time.Local)
+	up := newTestUpstream(srv)
+	e := newEngineWith(dir, up)
+	e.now = func() time.Time { return now }
+
+	future := time.Now().Add(48 * time.Hour).Unix()
+	if _, err := e.ImportAccount(testAuthDoc(t, "u1", "一号", "cn", "at-1", "rt-1", future, "")); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if _, err := e.Checkin("u1"); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	accRaw, err := e.RefreshCredits("u1")
+	if err != nil {
+		t.Fatalf("RefreshCredits: %v", err)
+	}
+	var acc accountJSON
+	if err := json.Unmarshal([]byte(accRaw), &acc); err != nil {
+		t.Fatalf("decode account: %v", err)
+	}
+	if !acc.HasCredits || acc.CreditsRemain != 320 || acc.LastCheckin == nil || acc.LastCheckin.Status != "ok" {
+		t.Fatalf("unexpected account after RefreshCredits: %+v", acc)
+	}
+}
+
+func TestDeleteAndExportAccount(t *testing.T) {
+	dir := t.TempDir()
+	e := NewEngine(dir)
+	doc := testAuthDoc(t, "u1", "一号", "cn", "at-1", "rt-1", 9999999999, "")
+	if _, err := e.ImportAccount(doc); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	exported, err := e.ExportAccount("u1")
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	parsed, err := auth.Parse([]byte(exported))
+	if err != nil || parsed.UID != "u1" || parsed.AccessToken != "at-1" {
+		t.Fatalf("exported json invalid: %v %+v", err, parsed)
+	}
+
+	if err := e.DeleteAccount("u1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := e.ExportAccount("u1"); err == nil {
+		t.Fatal("expected export after delete to fail")
+	}
+	listRaw, err := e.ListAccounts()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var list []accountJSON
+	if err := json.Unmarshal([]byte(listRaw), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected empty list after delete, got %+v", list)
+	}
+}
+
+func TestStartAndPollLogin(t *testing.T) {
+	var ready atomic.Bool
+	srv := newFakeResourceAndLoginServer(t, &ready)
+	dir := t.TempDir()
+	up := newTestUpstream(srv)
+	e := newEngineWith(dir, up)
+	e.loginBaseCN = srv.URL
+	e.loginBaseGlobal = srv.URL
+
+	startRaw, err := e.StartLogin("cn")
+	if err != nil {
+		t.Fatalf("StartLogin: %v", err)
+	}
+	var startRes startLoginResult
+	if err := json.Unmarshal([]byte(startRaw), &startRes); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	if startRes.State != "st-123" || startRes.Realm != "cn" || !strings.Contains(startRes.URL, "st-123") {
+		t.Fatalf("unexpected start result: %+v", startRes)
+	}
+
+	pollRaw, err := e.PollLogin("st-123")
+	if err != nil {
+		t.Fatalf("PollLogin pending: %v", err)
+	}
+	var poll1 pollLoginResult
+	if err := json.Unmarshal([]byte(pollRaw), &poll1); err != nil || poll1.Done {
+		t.Fatalf("expected pending poll, got err=%v res=%+v", err, poll1)
+	}
+
+	ready.Store(true)
+	pollRaw2, err := e.PollLogin("st-123")
+	if err != nil {
+		t.Fatalf("PollLogin done: %v", err)
+	}
+	var poll2 pollLoginResult
+	if err := json.Unmarshal([]byte(pollRaw2), &poll2); err != nil || !poll2.Done || poll2.Account == nil {
+		t.Fatalf("expected completed poll, got err=%v res=%+v", err, poll2)
+	}
+	if poll2.Account.UID != "login-u1" || poll2.Account.Nickname != "扫码新号" || poll2.Account.Realm != "cn" {
+		t.Fatalf("unexpected logged-in account: %+v", poll2.Account)
+	}
+
+	// 完成后 state 应被消费，再次 poll 报错
+	if _, err := e.PollLogin("st-123"); err == nil {
+		t.Fatal("expected reused state to fail")
+	}
+}

@@ -6,4 +6,9 @@ interface EngineClient {
     fun checkin(uid: String): CheckinResult
     fun getCheckinModel(): String
     fun setCheckinModel(model: String)
+    fun refreshCredits(uid: String): Account
+    fun deleteAccount(uid: String)
+    fun exportAccount(uid: String): String
+    fun startLogin(realm: String): StartLoginResult
+    fun pollLogin(state: String): PollLoginResult
 }
