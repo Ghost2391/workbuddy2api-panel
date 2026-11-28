@@ -789,6 +789,39 @@ http://127.0.0.1:7863/panel/
 
 > ⚠️ 公网部署提示：服务自身只提供明文 HTTP，**请务必置于 HTTPS 反向代理之后**（Nginx/Caddy 等）并配置访问限流；仅本机或私有网络使用时可直接运行。
 
+## 📱 手机内嵌面板（Android App 托管）
+
+Android App 现在**在手机本机托管完整面板**，不再内置原生签到界面：面板以静态 ARM 二进制（`libwbpanel.so`）随 App 打包，由前台服务在本机 `127.0.0.1:7863` 启动，账号、签到、积分等操作全部在面板自带的移动网页里完成。适合手机智能体 dsh-Go 等本机客户端直接调用，无需连电脑。
+
+**构建**
+
+```bash
+./scripts/build-android.sh   # 自动先跑 scripts/build-panel-android.sh，再打 APK
+```
+
+产物：`android/app/build/outputs/apk/debug/app-debug.apk`（内含 `lib/arm64-v8a/libwbpanel.so` 与 `lib/armeabi-v7a/libwbpanel.so`）。
+
+**使用**
+
+1. 安装并打开 App，首次启动会生成随机 48 位 API Key 并自动启动面板；状态栏出现「WB 手机面板」前台服务通知。
+2. 在手机浏览器打开 `http://127.0.0.1:7863/panel`，用面板里的「添加账号」OAuth 登录、签到、查看积分（与 PC 面板完全一致）。
+3. App 首页可复制 Key、启停面板、查看最近日志。面板需长期运行时，请在系统设置里对它忽略电池优化，避免被 OEM 清理。
+
+**接入 dsh-Go**
+
+在 dsh-Go 的 Provider 里选择 WorkBuddy 预设（或任意 OpenAI 兼容），填写：
+
+- Base URL：`http://127.0.0.1:7863/v1`
+- API Key：App 首页复制的 Key
+
+dsh-Go 的 PRoot 环境与应用共享 loopback，因此 `127.0.0.1` 可直接访问；模型列表可用 `GET /v1/models` 获取。
+
+**数据与安全**
+
+- 面板只监听 `127.0.0.1`，不暴露到局域网/公网；Key 随机生成并存于 App 私有目录，日志中的 `api_key` / Bearer 会被脱敏。
+- 账号凭证在 App 私有目录 `filesDir/auths`（等同面板的 `auth_dir`），状态与配置在 `filesDir/panel`、`filesDir/data`；卸载 App 即清除。
+- 原生签到引擎保留在代码中但不再从界面调用，避免与面板并发读写 `auths`。
+
 ## 🔌 API 端点
 
 | 端点 | 鉴权 | 说明 |

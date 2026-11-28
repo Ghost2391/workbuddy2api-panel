@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# 构建 Android 签到 App：先 gomobile bind 生成 AAR，再 Gradle 打包 debug APK。
+# 构建 Android App：先交叉编译手机面板二进制，再 gomobile bind 生成 AAR，最后 Gradle 打包 debug APK。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 command -v go >/dev/null || { echo "go not found in PATH" >&2; exit 1; }
+
+# 面板二进制必须先放进 jniLibs，Gradle 只负责打包。
+./scripts/build-panel-android.sh
 if ! grep -q 'golang.org/x/mobile' go.mod; then
     echo "go.mod 缺少 golang.org/x/mobile（gomobile bind 依赖）。" >&2
     echo "修复：go get golang.org/x/mobile@latest 后重新运行本脚本。" >&2
