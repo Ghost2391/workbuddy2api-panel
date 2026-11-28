@@ -56,3 +56,5 @@ android/local.properties
 android/**/build/
 android/app/libs/*.aar
 android/app/libs/*.jar
+# 面板二进制由 scripts/build-panel-android.sh 生成（随 APK 提交，不入源码库）
+android/app/src/main/jniLibs/**/libwbpanel.so
