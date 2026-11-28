@@ -822,6 +822,9 @@ dsh-Go 的 PRoot 环境与应用共享 loopback，因此 `127.0.0.1` 可直接�
 - 账号凭证在 App 私有目录 `filesDir/auths`（等同面板的 `auth_dir`），状态与配置在 `filesDir/panel`、`filesDir/data`；卸载 App 即清除。
 - 原生签到引擎保留在代码中但不再从界面调用，避免与面板并发读写 `auths`。
 
+> [!NOTE]
+> 面板进程会显式设置 `SSL_CERT_DIR=/system/etc/security/cacerts`。Go 静态二进制默认只找 `/etc/ssl/certs` 等标准路径，在 Android 上不存在，会导致上游 HTTPS 报 `x509: certificate signed by unknown authority`（症状：`/v1/models` 空列表、账号降级、`/v1/chat/completions` 返回 `no_healthy_account` 503）。若把面板静态二进制跑在其他非标准 Linux 环境，同样需要用 `SSL_CERT_FILE` / `SSL_CERT_DIR` 指向正确的 CA 目录。
+
 ## 🔌 API 端点
 
 | 端点 | 鉴权 | 说明 |
