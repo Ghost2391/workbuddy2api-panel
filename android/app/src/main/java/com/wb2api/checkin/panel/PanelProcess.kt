@@ -61,10 +61,13 @@ class PanelProcess(
         ensureApiKey()
         stopping.set(false)
         return runCatching {
-            val p = ProcessBuilder(bin.absolutePath, "-config", configFile().absolutePath)
+            val builder = ProcessBuilder(bin.absolutePath, "-config", configFile().absolutePath)
                 .directory(workDir())
                 .redirectErrorStream(true)
-                .start()
+            // Go 静态二进制不认 Android 的系统根证书路径，上游 HTTPS 会全部报
+            // x509: certificate signed by unknown authority。显式指向 CA 目录。
+            builder.environment()["SSL_CERT_DIR"] = SYSTEM_CA_DIR
+            val p = builder.start()
             process = p
             reader = thread(name = "wbpanel-log", isDaemon = true) {
                 p.inputStream.bufferedReader().useLines { lines ->
@@ -117,5 +120,6 @@ class PanelProcess(
 
     private companion object {
         const val TAG = "WbPanel"
+        const val SYSTEM_CA_DIR = "/system/etc/security/cacerts"
     }
 }
