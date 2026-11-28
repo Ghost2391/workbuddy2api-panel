@@ -41,7 +41,12 @@ object PanelController {
         val app = context.applicationContext
         synchronized(lock) {
             appContext = app
-            if (process?.isRunning() == true || _state.value.starting) return
+            // 服务被系统重建时进程可能仍在：只同步状态，不重复启动。
+            if (process?.isRunning() == true) {
+                _state.update { it.copy(running = true, starting = false) }
+                return
+            }
+            if (_state.value.starting) return
             retryJob?.cancel()
             retryJob = null
             attempt = 0
