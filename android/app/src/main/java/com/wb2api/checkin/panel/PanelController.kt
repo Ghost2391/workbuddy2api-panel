@@ -38,8 +38,8 @@ object PanelController {
     private var retryJob: Job? = null
     private var stopJob: Job? = null
 
-    /** 用户主动停止的意图；启动流程据此丢弃迟到的结果，避免误报错误。 */
-    private var stopRequested = false
+    /** 每次 start/stop 递增；启动协程与退出回调据此丢弃过期结果。 */
+    private var generation = 0
 
     fun start(context: Context) {
         val app = context.applicationContext
@@ -47,7 +47,6 @@ object PanelController {
             appContext = app
             // 服务被系统重建时进程可能仍在：只同步状态，不重复启动。
             if (process?.isRunning() == true) {
-                stopRequested = false
                 _state.update { it.copy(running = true, starting = false) }
                 return
             }
@@ -55,12 +54,12 @@ object PanelController {
             retryJob?.cancel()
             retryJob = null
             attempt = 0
-            stopRequested = false
-            startLocked(app)
+            generation++
+            startLocked(app, generation)
         }
     }
 
-    private fun startLocked(app: Context) {
+    private fun startLocked(app: Context, gen: Int) {
         _state.update { it.copy(starting = true, error = null) }
         val priorStop = stopJob
         val proc = process ?: PanelProcess(app, ::appendLog).also { process = it }
@@ -72,19 +71,18 @@ object PanelController {
         scope.launch {
             // 等上一次停止真正退出，避免新旧进程争抢 7863 端口。
             priorStop?.join()
-            synchronized(lock) {
-                if (stopRequested) {
-                    _state.update { it.copy(running = false, starting = false) }
-                    return@synchronized
-                }
+            // 生成代已变（用户再次 stop）则中止，绝不启动新进程。
+            if (stale(gen)) {
+                _state.update { it.copy(running = false, starting = false) }
+                return@launch
             }
-            val ok = proc.start { code -> onExit(code) }
+            val ok = proc.start { code -> onExit(gen, code) }
             synchronized(lock) {
-                if (stopRequested) {
+                if (stale(gen)) {
+                    // 启动过程中被停止：杀掉刚拉起的进程，不留孤儿。
+                    if (ok) proc.stop()
                     _state.update { it.copy(running = false, starting = false) }
-                    return@synchronized
-                }
-                if (ok) {
+                } else if (ok) {
                     attempt = 0
                     _state.update { it.copy(running = true, starting = false) }
                 } else if (_state.value.error == null) {
@@ -94,9 +92,12 @@ object PanelController {
         }
     }
 
-    private fun onExit(code: Int) {
+    /** 调用方须持有 lock。 */
+    private fun stale(gen: Int): Boolean = gen != generation
+
+    private fun onExit(gen: Int, code: Int) {
         synchronized(lock) {
-            if (stopRequested) return
+            if (stale(gen)) return
             _state.update { it.copy(running = false, starting = false) }
             val app = appContext ?: return
             if (!PanelBackoff.shouldRestart(attempt)) {
@@ -111,7 +112,9 @@ object PanelController {
             retryJob = scope.launch {
                 delay(waitMs)
                 synchronized(lock) {
-                    if (!stopRequested && !_state.value.running && appContext != null) startLocked(app)
+                    if (!stale(gen) && !_state.value.running && appContext != null) {
+                        startLocked(app, gen)
+                    }
                 }
             }
         }
@@ -122,7 +125,7 @@ object PanelController {
             retryJob?.cancel()
             retryJob = null
             attempt = 0
-            stopRequested = true
+            generation++
             val proc = process
             process = null
             _state.update { it.copy(running = false, starting = false, error = null) }
