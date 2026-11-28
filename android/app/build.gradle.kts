@@ -37,6 +37,10 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // 面板二进制要解压到 nativeLibraryDir 才能 exec；Android 10+ 禁止从应用可写目录执行。
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
